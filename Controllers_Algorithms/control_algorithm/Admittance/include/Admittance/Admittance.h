@@ -43,11 +43,16 @@ protected:
 
   // ADMITTANCE PARAMETERS:
   Matrix6d M_, D_, K_;
+  Eigen::VectorXd B_;
+  Eigen::VectorXd C_;
 
   // Subscribers:
   ros::Subscriber sub_arm_state_;
   ros::Subscriber sub_wrench_state_;
   ros::Subscriber sub_filtered_force_;
+  ros::Subscriber sub_waist_angle_;
+  float latest_waist_angle_;
+  void waist_angle_callback(const std_msgs::Float32ConstPtr& msg);
   // Publishers:
   ros::Publisher pub_arm_cmd_;
   ros::Publisher vac_pub_;
@@ -81,6 +86,13 @@ protected:
 
   double arm_max_vel_;
   double arm_max_acc_;
+  double arm_max_ang_vel_;
+  double arm_max_ang_acc_;
+  double min_Z_height_;
+  double max_Z_height_;
+  bool z_limit_warned_;
+
+  Vector6d last_published_twist_;
 
   double force_x_pre, force_y_pre, force_z_pre;
   double torque_x_pre, torque_y_pre, torque_z_pre;
@@ -101,11 +113,15 @@ public:
                       std::vector<double> M,
                       std::vector<double> D,
                       std::vector<double> K,
+                      std::vector<double> B,
+                      std::vector<double> C,
                       std::vector<double> desired_pose,
                       std::string base_link,
                       std::string end_link,
                       double arm_max_vel,
-                      double arm_max_acc
+                      double arm_max_acc,
+                      double min_Z_height,
+                      double max_Z_height
                        );
   ~Admittance(){}
   void run();

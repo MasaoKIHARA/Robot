@@ -26,6 +26,7 @@
   <arg name="headless_mode" default="false" doc="Automatically send URScript to robot to execute. On e-Series this does require the robot to be in 'remote-control' mode. With this, the URCap is not needed on the robot."/>
 
   <include file="$(find ur_robot_driver)/launch/ur_common.launch" pass_all_args="true" />
+  <node pkg="tf" type="static_transform_publisher" name="world_to_base_link" args="-1.8 1.5 0.793 0 0 0 world base_link 100" />
   <!-- <node name="rviz" pkg="rviz" type="rviz" respawn="false" output="screen" args="-d $(find ur_robot_driver)/resources/example_rviz_config.rviz"/> -->
   
 </launch>

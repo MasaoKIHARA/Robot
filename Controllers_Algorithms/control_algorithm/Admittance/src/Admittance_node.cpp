@@ -18,10 +18,15 @@ int main(int argc, char **argv)
     std::vector<double> M;
     std::vector<double> D;
     std::vector<double> K;
+    std::vector<double> B;
+    std::vector<double> C;
     std::vector<double> desired_pose;
     
     double arm_max_vel;
     double arm_max_acc;
+
+    double min_Z_height;
+    double max_Z_height;
 
 
     // LOADING PARAMETERS FROM THE ROS SERVER 
@@ -34,11 +39,16 @@ int main(int argc, char **argv)
     if (!nh.getParam("mass_arm", M)) { ROS_ERROR("Couldn't retrieve the desired mass of the arm."); return -1; }
     if (!nh.getParam("damping_arm", D)) { ROS_ERROR("Couldn't retrieve the desired damping of the coupling."); return -1; }
     if (!nh.getParam("stiffness_coupling", K)) { ROS_ERROR("Couldn't retrieve the desired stiffness of the coupling."); return -1; }
+    if (!nh.getParam("coefficients_theta", B)){ ROS_ERROR("Couldn't retrieve the desired coefficients for theta."); return -1; }
+    if (!nh.getParam("offset_theta", C)){ ROS_ERROR("Couldn't retrieve the desired offset for theta."); return -1; }
     if (!nh.getParam("base_link", base_link)) { ROS_ERROR("Couldn't retrieve the base_link."); return -1; }
     if (!nh.getParam("end_link", end_link)) { ROS_ERROR("Couldn't retrieve the end_link."); return -1; } 
     if (!nh.getParam("desired_pose", desired_pose)) { ROS_ERROR("Couldn't retrieve the desired pose of the spring."); return -1; }
     if (!nh.getParam("arm_max_vel", arm_max_vel)) { ROS_ERROR("Couldn't retrieve the max velocity for the arm."); return -1;}
     if (!nh.getParam("arm_max_acc", arm_max_acc)) { ROS_ERROR("Couldn't retrieve the max acceleration for the arm."); return -1;}
+    if (!nh.getParam("min_Z_height", min_Z_height)) { ROS_ERROR("Couldn't retrieve the min height of the effector."); return -1;}
+    if (!nh.getParam("max_Z_height", max_Z_height)) { ROS_ERROR("Couldn't retrieve the max height of the effector."); return -1;}
+
     // Constructing the controller
     Admittance admittance(
         nh,
@@ -46,11 +56,14 @@ int main(int argc, char **argv)
         topic_arm_state,
         topic_arm_command,
         topic_wrench_state,
-        M, D, K, desired_pose,
+        M, D, K, B, C, desired_pose,
         base_link,
         end_link,
         arm_max_vel,
-        arm_max_acc);
+        arm_max_acc,
+        min_Z_height,
+        max_Z_height
+    );
 
     // Running the controller
     admittance.run();

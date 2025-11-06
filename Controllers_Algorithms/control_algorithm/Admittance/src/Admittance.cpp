@@ -8,21 +8,30 @@ Admittance::Admittance(ros::NodeHandle &n,
     std::vector<double> M,
     std::vector<double> D,
     std::vector<double> K,
+    std::vector<double> B,
+    std::vector<double> C,
     std::vector<double> desired_pose,
     std::string base_link,
     std::string end_link,
     double arm_max_vel,
-    double arm_max_acc) ://
+    double arm_max_acc,
+    double min_Z_height,
+    double max_Z_height)://
   nh_(n), loop_rate_(frequency),
   M_(M.data()), D_(D.data()),K_(K.data()),desired_pose_(desired_pose.data()),
   arm_max_vel_(arm_max_vel), arm_max_acc_(arm_max_acc),
-  base_link_(base_link), end_link_(end_link){
+  base_link_(base_link), end_link_(end_link),
+  min_Z_height_(min_Z_height), max_Z_height_(max_Z_height), z_limit_warned_(false){
 
   //* Subscribers
   sub_arm_state_           = nh_.subscribe(topic_arm_state, 5, 
       &Admittance::state_arm_callback, this,ros::TransportHints().reliable().tcpNoDelay());
   sub_wrench_state_        = nh_.subscribe(topic_wrench_state, 5,
       &Admittance::state_wrench_callback, this, ros::TransportHints().reliable().tcpNoDelay());
+
+  latest_waist_angle_ = 0.0f;										 
+  sub_waist_angle_ = nh_.subscribe("/waist_angle", 1, &Admittance::waist_angle_callback, this);	 
+  ROS_INFO("Subscribing to /waist_angle");
 
   //* Publishers
   pub_arm_cmd_             = nh_.advertise<geometry_msgs::Twist>(topic_arm_command, 5);
@@ -58,6 +67,10 @@ Admittance::Admittance(ros::NodeHandle &n,
   torque_y_pre = 0;
   torque_z_pre = 0;
   wait_for_transformations();
+
+  // Convert std::vector to Eigen::VectorXd
+  B_ = Eigen::Map<const Eigen::VectorXd>(B.data(), B.size());
+  C_ = Eigen::Map<const Eigen::VectorXd>(C.data(), C.size());
 }
 
 //!-                   INITIALIZATION                    -!//
@@ -93,6 +106,11 @@ void Admittance::run() {
 }
 
 //!-                Admittance Dynamics                  -!//
+
+void Admittance::waist_angle_callback(const std_msgs::Float32ConstPtr& msg){
+  latest_waist_angle_ = msg->data;
+  ROS_DEBUG("Received waist angle: %.2f", latest_waist_angle_);
+}
 
 void Admittance::compute_admittance() {
 
@@ -159,8 +177,14 @@ void Admittance::compute_admittance() {
   vac_msg.z = var_D_z;     
   vac_pub_.publish(vac_msg);
 
+
+ // Determine the desired_accelaration
+ 
+  double theta = latest_waist_angle_;	
+  Eigen::VectorXd F_pat_ = B_ * theta + C_;
+
   coupling_wrench_arm=  D_ * (arm_desired_twist_adm_) + K_*error;
-  arm_desired_accelaration = M_.inverse() * ( - coupling_wrench_arm  + wrench_external_);
+  arm_desired_accelaration = M_.inverse() * ( - coupling_wrench_arm  + wrench_external_ + F_pat_);
 
   double a_acc_norm = (arm_desired_accelaration.segment(0, 3)).norm();
 
@@ -176,6 +200,20 @@ void Admittance::compute_admittance() {
   last_acceleration_x_ = arm_desired_twist_adm_(0);
   last_acceleration_y_ = arm_desired_twist_adm_(1);
   last_acceleration_z_ = arm_desired_twist_adm_(2);
+  
+  if (arm_position_(2) <= min_Z_height_ && wrench_external_(2) + F_pat_(2) < 0){
+    arm_desired_twist_adm_.setZero();
+    if (!z_limit_warned_) {
+       ROS_WARN("[Admittance] Effector Z (%.3f) <= min_z_height (%.3f): All arm commands set to 0", arm_position_(2), min_Z_height_);
+       z_limit_warned_ = true;
+    } 
+  }
+  else{
+    if (z_limit_warned_) {
+       ROS_INFO("[Admittance] Effector Z height (%.3f) recovered above min_z_height (%.3f): Control resumes", arm_position_(2), min_Z_height_);
+       z_limit_warned_ = false;
+    } 
+  }
 }
 
 //!-                     CALLBACKS                       -!//
@@ -208,7 +246,7 @@ void Admittance::state_wrench_callback(
                         msg->wrench.force.y,
                         msg->wrench.force.z,
                         0,0,
-                        // msg->wrench.torque.x;
+                        // msg->wrench.torque.x,
                         // msg->wrench.torque.y,
                         msg->wrench.torque.z;
 
@@ -294,7 +332,7 @@ void Admittance::send_commands_to_robot() {
   arm_twist_cmd.angular.x = arm_desired_twist_adm_(3);
   arm_twist_cmd.angular.y = arm_desired_twist_adm_(4);
   arm_twist_cmd.angular.z = arm_desired_twist_adm_(5);
-  
+
   pub_arm_cmd_.publish(arm_twist_cmd);
 }
 
