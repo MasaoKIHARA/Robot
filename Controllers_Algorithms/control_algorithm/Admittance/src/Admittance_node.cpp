@@ -41,13 +41,13 @@ int main(int argc, char **argv)
     if (!nh.getParam("stiffness_coupling", K)) { ROS_ERROR("Couldn't retrieve the desired stiffness of the coupling."); return -1; }
     if (!nh.getParam("coefficients_theta", B)){ ROS_ERROR("Couldn't retrieve the desired coefficients for theta."); return -1; }
     if (!nh.getParam("offset_theta", C)){ ROS_ERROR("Couldn't retrieve the desired offset for theta."); return -1; }
-    if (!nh.getParam("base_link", base_link)) { ROS_ERROR("Couldn't retrieve the base_link."); return -1; }
-    if (!nh.getParam("end_link", end_link)) { ROS_ERROR("Couldn't retrieve the end_link."); return -1; } 
     if (!nh.getParam("desired_pose", desired_pose)) { ROS_ERROR("Couldn't retrieve the desired pose of the spring."); return -1; }
     if (!nh.getParam("arm_max_vel", arm_max_vel)) { ROS_ERROR("Couldn't retrieve the max velocity for the arm."); return -1;}
     if (!nh.getParam("arm_max_acc", arm_max_acc)) { ROS_ERROR("Couldn't retrieve the max acceleration for the arm."); return -1;}
     if (!nh.getParam("min_Z_height", min_Z_height)) { ROS_ERROR("Couldn't retrieve the min height of the effector."); return -1;}
     if (!nh.getParam("max_Z_height", max_Z_height)) { ROS_ERROR("Couldn't retrieve the max height of the effector."); return -1;}
+    if (!nh.getParam("base_link", base_link)) { ROS_ERROR("Couldn't retrieve the base_link."); return -1; }
+    if (!nh.getParam("end_link", end_link)) { ROS_ERROR("Couldn't retrieve the end_link."); return -1; } 
 
     // Constructing the controller
     Admittance admittance(
@@ -57,12 +57,12 @@ int main(int argc, char **argv)
         topic_arm_command,
         topic_wrench_state,
         M, D, K, B, C, desired_pose,
-        base_link,
-        end_link,
         arm_max_vel,
         arm_max_acc,
         min_Z_height,
-        max_Z_height
+        max_Z_height,
+        base_link,
+        end_link
     );
 
     // Running the controller

@@ -17,8 +17,8 @@ stiffness_coupling: [0,0,0,0,0,0,
                      0,0,0,0,0,0,
                      0,0,0,0,0,0]
 
-coefficients_theta: [0.0, 0.0, 0.76, 0.0, 0.0, 0.0]
-offset_theta: [0.0, 0.0, -132, 0.0, 0.0, 0.0]
+coefficients_theta: [0.0, 0.0, 0.70, 0.0, 0.0, 0.0]
+offset_theta: [0.0, 0.0, -126, 0.0, 0.0, 0.0]
 
 base_link: "base_link"
 end_link: "wrist_3_link"

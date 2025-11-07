@@ -116,12 +116,12 @@ public:
                       std::vector<double> B,
                       std::vector<double> C,
                       std::vector<double> desired_pose,
-                      std::string base_link,
-                      std::string end_link,
                       double arm_max_vel,
                       double arm_max_acc,
                       double min_Z_height,
-                      double max_Z_height
+                      double max_Z_height,
+                      std::string base_link,
+                      std::string end_link
                        );
   ~Admittance(){}
   void run();

@@ -11,17 +11,17 @@ Admittance::Admittance(ros::NodeHandle &n,
     std::vector<double> B,
     std::vector<double> C,
     std::vector<double> desired_pose,
-    std::string base_link,
-    std::string end_link,
     double arm_max_vel,
     double arm_max_acc,
     double min_Z_height,
-    double max_Z_height)://
+    double max_Z_height,
+    std::string base_link,
+    std::string end_link)://
   nh_(n), loop_rate_(frequency),
   M_(M.data()), D_(D.data()),K_(K.data()),desired_pose_(desired_pose.data()),
   arm_max_vel_(arm_max_vel), arm_max_acc_(arm_max_acc),
-  base_link_(base_link), end_link_(end_link),
-  min_Z_height_(min_Z_height), max_Z_height_(max_Z_height), z_limit_warned_(false){
+  min_Z_height_(min_Z_height), max_Z_height_(max_Z_height), z_limit_warned_(false),
+  base_link_(base_link), end_link_(end_link){
 
   //* Subscribers
   sub_arm_state_           = nh_.subscribe(topic_arm_state, 5, 
