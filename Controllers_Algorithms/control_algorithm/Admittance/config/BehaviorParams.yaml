@@ -1,0 +1,15 @@
+behaviors:
+  - name: knee1
+    type: KneeBuckling
+    mode: reduce_B          # "impulse" or "reduce_B"
+    impulse_force_z: -60.0  # mode: for impulse (N)
+    impulse_duration: 0.03  # [s]
+    b_min_scale: 0.2        # mode: for reduce_B
+    b_fall_time: 0.05       # [s]
+    b_hold_time: 0.20       # [s]
+    b_rise_time: 0.20       # [s]
+
+  - name: slide1
+    type: SeatSliding
+    slide_force_x: 25.0     # [N] (start form small value)
+    duration: 0.8           # [s]

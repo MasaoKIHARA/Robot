@@ -84,9 +84,9 @@ Admittance::Admittance(ros::NodeHandle &n,
   // load behaviors
   load_behaviors_from_param();
 
-  // // key interface starts
-  // key_stop_ = false;
-  // key_thread_ = std::thread(&Admittance::keyboardLoop, this);
+  // key interface starts
+  key_stop_ = false;
+  key_thread_ = std::thread(&Admittance::keyboardLoop, this);
 }
 
 //!-                   INITIALIZATION                    -!//
@@ -466,4 +466,41 @@ void Admittance::triggerBehavior(const std::string& name) {
 void Admittance::resetAllBehaviors() {
   for (auto& b : behaviors_) b->reset();
   ROS_INFO("All behaviors reset.");
+}
+
+void Admittance::keyboardLoop() {
+  // change to raw mode
+  struct termios raw;
+  if (tcgetattr(STDIN_FILENO, &orig_term_) == 0) {
+    raw = orig_term_;
+    raw.c_lflag &= ~(ICANON | ECHO);
+    raw.c_cc[VMIN] = 0;
+    raw.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+  }
+
+  ROS_INFO("Keyboard: press 'k' (knee), 's' (slide), 'r' (reset).");
+
+  while (ros::ok() && !key_stop_) {
+    fd_set set;
+    FD_ZERO(&set);
+    FD_SET(STDIN_FILENO, &set);
+    struct timeval tv {0, 100000}; // 100ms
+    int rv = select(STDIN_FILENO+1, &set, nullptr, nullptr, &tv);
+    if (rv > 0 && FD_ISSET(STDIN_FILENO, &set)) {
+      char c;
+      ssize_t n = read(STDIN_FILENO, &c, 1);
+      if (n == 1) {
+        if (c == 'k') {
+          triggerBehavior("knee1"); // set name by YAML
+        } else if (c == 's') {
+          triggerBehavior("slide1");
+        } else if (c == 'r') {
+          resetAllBehaviors();
+        }
+      }
+    }
+  }
+  // restoration
+  tcsetattr(STDIN_FILENO, TCSANOW, &orig_term_);
 }

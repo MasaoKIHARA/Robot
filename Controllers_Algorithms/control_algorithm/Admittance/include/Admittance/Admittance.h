@@ -117,10 +117,10 @@ protected:
   // behavior framework
   std::vector<std::shared_ptr<Behavior>> behaviors_;
 
-  // // key interface
-  // std::thread key_thread_;
-  // std::atomic_bool key_stop_{false};
-  // struct termios orig_term_{};
+  // key interface
+  std::thread key_thread_;
+  std::atomic_bool key_stop_{false};
+  struct termios orig_term_{};
 
 public:
   Admittance(ros::NodeHandle &n, double frequency,
@@ -159,6 +159,7 @@ private:
 
   // internal
   void load_behaviors_from_param();
+  void keyboardLoop();
 
 private:
   std::string   base_link_;

@@ -15,6 +15,7 @@
 
 
   <rosparam file="$(find Admittance)/config/AdmittanceParams.yaml" command="load"/>
+  <rosparam file="$(find Admittance)/config/BehaviorParams.yaml" command="load"/>
 
   <node pkg="Admittance" name="Admittance" type="Admittance_node" output="screen"/>
   <node name="extended_kalman_filter_node" pkg="Admittance" type="ekf.py" output="screen">
