@@ -1,4 +1,6 @@
-#include <Admittance/Admittance.h>
+#include "Admittance/Admittance.h"
+#include "Behavior/KneeBucklingBehavior.h"
+#include "Behavior/SeatSlidingBehavior.h"
 
 Admittance::Admittance(ros::NodeHandle &n,
     double frequency,
@@ -13,13 +15,15 @@ Admittance::Admittance(ros::NodeHandle &n,
     std::vector<double> desired_pose,
     double arm_max_vel,
     double arm_max_acc,
+    double arm_max_ang_vel,
+    double arm_max_ang_acc,
     double min_Z_height,
     double max_Z_height,
     std::string base_link,
     std::string end_link)://
   nh_(n), loop_rate_(frequency),
   M_(M.data()), D_(D.data()),K_(K.data()),desired_pose_(desired_pose.data()),
-  arm_max_vel_(arm_max_vel), arm_max_acc_(arm_max_acc),
+  arm_max_vel_(arm_max_vel), arm_max_acc_(arm_max_acc), arm_max_ang_vel_(arm_max_ang_vel), arm_max_ang_acc_(arm_max_ang_acc), 
   min_Z_height_(min_Z_height), max_Z_height_(max_Z_height), z_limit_warned_(false),
   base_link_(base_link), end_link_(end_link){
 
@@ -55,6 +59,10 @@ Admittance::Admittance(ros::NodeHandle &n,
 
   // Init integrator
   arm_desired_twist_adm_.setZero();
+  last_published_twist_.setZero();
+
+  arm_max_ang_vel_ = 0.8; // [rad/s]
+  arm_max_ang_acc_ = 1.5; // [rad/s^2]
 
 
   ft_arm_ready_ = false;
@@ -71,6 +79,14 @@ Admittance::Admittance(ros::NodeHandle &n,
   // Convert std::vector to Eigen::VectorXd
   B_ = Eigen::Map<const Eigen::VectorXd>(B.data(), B.size());
   C_ = Eigen::Map<const Eigen::VectorXd>(C.data(), C.size());
+  B_orig_ = B_;
+
+  // load behaviors
+  load_behaviors_from_param();
+
+  // // key interface starts
+  // key_stop_ = false;
+  // key_thread_ = std::thread(&Admittance::keyboardLoop, this);
 }
 
 //!-                   INITIALIZATION                    -!//
@@ -127,6 +143,18 @@ void Admittance::compute_admittance() {
   Eigen::AngleAxisd err_arm_des_orient(quat_rot_err);
   error.bottomRows(3) << err_arm_des_orient.axis() * err_arm_des_orient.angle();
 
+  // Behavor renewing and effects collection
+  double dt = loop_rate_.expectedCycleTime().toSec(); // time interval
+  double tnow = ros::Time::now().toSec();             // current time
+
+  Vector6d ext_from_behaviors = Vector6d::Zero();
+  double b_scale_total = 1.0;
+  for (auto& b : behaviors_) {
+    b->update(tnow, dt);
+    ext_from_behaviors += b->externalWrench();              // ExternalWrench installed
+    b_scale_total = std::min(b_scale_total, b->BScale());   // B_ by patient model renewed
+  }
+
   // Translation error w.r.t. desired equilibrium
   Vector6d coupling_wrench_arm;
 
@@ -180,11 +208,13 @@ void Admittance::compute_admittance() {
 
  // Determine the desired_accelaration
  
+ // patient model
   double theta = latest_waist_angle_;	
-  Eigen::VectorXd F_pat_ = B_ * theta + C_;
+  Eigen::VectorXd B_eff = B_orig_ * b_scale_total;
+  Eigen::VectorXd F_pat_ = B_eff * theta + C_;
 
   coupling_wrench_arm=  D_ * (arm_desired_twist_adm_) + K_*error;
-  arm_desired_accelaration = M_.inverse() * ( - coupling_wrench_arm  + wrench_external_ + F_pat_);
+  arm_desired_accelaration = M_.inverse() * ( - coupling_wrench_arm  + (wrench_external_ + ext_from_behaviors) + F_pat_);
 
   double a_acc_norm = (arm_desired_accelaration.segment(0, 3)).norm();
 
@@ -193,14 +223,15 @@ void Admittance::compute_admittance() {
                              << " norm: " << a_acc_norm);
     arm_desired_accelaration.segment(0, 3) *= (arm_max_acc_ / a_acc_norm);
   }
+
   // Integrate for velocity based interface
-  
   ros::Duration duration = loop_rate_.expectedCycleTime();
   arm_desired_twist_adm_ += arm_desired_accelaration * duration.toSec();
   last_acceleration_x_ = arm_desired_twist_adm_(0);
   last_acceleration_y_ = arm_desired_twist_adm_(1);
   last_acceleration_z_ = arm_desired_twist_adm_(2);
-  
+
+  // Z limitation
   if (arm_position_(2) <= min_Z_height_ && wrench_external_(2) + F_pat_(2) < 0){
     arm_desired_twist_adm_.setZero();
     if (!z_limit_warned_) {
@@ -316,14 +347,40 @@ void Admittance::state_wrench_callback(
 //!-               COMMANDING THE ROBOT                  -!//
 
 void Admittance::send_commands_to_robot() {
-  double norm_vel_des = (arm_desired_twist_adm_.segment(0, 3)).norm();
-
-  if (norm_vel_des > arm_max_vel_) {
-    ROS_WARN_STREAM_THROTTLE(1, "Admittance generate fast arm movements! velocity norm: " << norm_vel_des);
-
-    arm_desired_twist_adm_.segment(0, 3) *= (arm_max_vel_);
-
+  double lin_norm = (arm_desired_twist_adm_.segment(0, 3)).norm();
+  // (Normalized Scaling) Velosity limitation 
+  if (lin_norm > arm_max_vel_) {
+    ROS_WARN_STREAM_THROTTLE(1, "Admittance fast linear velocity! norm: " << lin_norm);
+    arm_desired_twist_adm_.segment(0, 3) *= (arm_max_vel_ / lin_norm);
   }
+  // (Normalized Scaling) Angular limitation
+  double ang_norm = (arm_desired_twist_adm_.segment(3, 3)).norm();
+  if (ang_norm > arm_max_ang_vel_) {
+    ROS_WARN_STREAM_THROTTLE(1, "Admittance fast angular velocity! norm: " << ang_norm);
+    arm_desired_twist_adm_.segment(3, 3) *= (arm_max_ang_vel_ / ang_norm);
+  }
+
+  // Slew limitation (make dv, domega less than dt*max_acc)
+  double dt = loop_rate_.expectedCycleTime().toSec();
+  Vector3d v_prev = last_published_twist_.segment(0,3);
+  Vector3d v_new  = arm_desired_twist_adm_.segment(0,3);
+  Vector3d dv = v_new - v_prev;
+  double max_dv = std::max(1e-6, arm_max_acc_ * dt);
+  if (dv.norm() > max_dv) {
+    dv *= (max_dv / dv.norm());
+    v_new = v_prev + dv;
+  }
+  arm_desired_twist_adm_.segment(0,3) = v_new;
+
+  Vector3d w_prev = last_published_twist_.segment(3,3);
+  Vector3d w_new  = arm_desired_twist_adm_.segment(3,3);
+  Vector3d dw = w_new - w_prev;
+  double max_dw = std::max(1e-6, arm_max_ang_acc_ * dt);
+  if (dw.norm() > max_dw) {
+    dw *= (max_dw / dw.norm());
+    w_new = w_prev + dw;
+  }
+  arm_desired_twist_adm_.segment(3,3) = w_new;
   
   geometry_msgs::Twist arm_twist_cmd;
   arm_twist_cmd.linear.x  = arm_desired_twist_adm_(0);
@@ -334,6 +391,7 @@ void Admittance::send_commands_to_robot() {
   arm_twist_cmd.angular.z = arm_desired_twist_adm_(5);
 
   pub_arm_cmd_.publish(arm_twist_cmd);
+  last_published_twist_ = arm_desired_twist_adm_;
 }
 
 //!-                    UTILIZATION                      -!//
@@ -364,3 +422,48 @@ bool Admittance::get_rotation_matrix(Matrix6d & rotation_matrix,
   return true;
 }
 
+void Admittance::load_behaviors_from_param() {
+  XmlRpc::XmlRpcValue arr;
+  if (!nh_.getParam("behaviors", arr) || arr.getType() != XmlRpc::XmlRpcValue::TypeArray) {
+    auto kb = std::make_shared<KneeBucklingBehavior>("knee_default");
+    behaviors_.push_back(kb);
+    ROS_INFO("No behaviors param found. Added default KneeBucklingBehavior.");
+    return;
+  }
+  for (int i = 0; i < arr.size(); ++i) {
+    if (arr[i].getType() != XmlRpc::XmlRpcValue::TypeStruct) continue;
+    std::string type = static_cast<std::string>(arr[i]["type"]);
+    std::string name = static_cast<std::string>(arr[i]["name"]);
+    if (type == "KneeBuckling") {
+      auto kb = std::make_shared<KneeBucklingBehavior>(name);
+      if (arr[i].hasMember("mode")) kb->mode = static_cast<std::string>(arr[i]["mode"]);
+      if (arr[i].hasMember("impulse_force_z")) kb->impulse_force_z = static_cast<double>(arr[i]["impulse_force_z"]);
+      if (arr[i].hasMember("impulse_duration")) kb->impulse_duration = static_cast<double>(arr[i]["impulse_duration"]);
+      if (arr[i].hasMember("b_min_scale")) kb->b_min_scale = static_cast<double>(arr[i]["b_min_scale"]);
+      if (arr[i].hasMember("b_fall_time")) kb->b_fall_time = static_cast<double>(arr[i]["b_fall_time"]);
+      if (arr[i].hasMember("b_hold_time")) kb->b_hold_time = static_cast<double>(arr[i]["b_hold_time"]);
+      if (arr[i].hasMember("b_rise_time")) kb->b_rise_time = static_cast<double>(arr[i]["b_rise_time"]);
+      behaviors_.push_back(kb);
+    } else if (type == "SeatSliding") {
+      auto sb = std::make_shared<SeatSlidingBehavior>(name);
+      if (arr[i].hasMember("slide_force_x")) sb->slide_force_x = static_cast<double>(arr[i]["slide_force_x"]);
+      if (arr[i].hasMember("duration")) sb->duration = static_cast<double>(arr[i]["duration"]);
+      behaviors_.push_back(sb);
+    }
+  }
+}
+
+void Admittance::triggerBehavior(const std::string& name) {
+    for (auto& b : behaviors_) {
+    if (b->name() == name) {
+      b->trigger(); ROS_INFO("Triggered behavior: %s", name.c_str());
+      return;
+    }
+  }
+  ROS_WARN("Behavior not found: %s", name.c_str());
+}
+
+void Admittance::resetAllBehaviors() {
+  for (auto& b : behaviors_) b->reset();
+  ROS_INFO("All behaviors reset.");
+}

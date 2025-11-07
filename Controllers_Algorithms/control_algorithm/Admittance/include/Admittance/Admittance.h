@@ -25,6 +25,14 @@
 #include <streambuf>
 #include <iostream>
 #include <cmath>
+#include <vector>
+#include <thread>
+#include <atomic>
+#include <termios.h>
+#include <unistd.h>
+#include <sys/select.h>
+
+#include "Behavior/Behavior.h"
 
 
 using namespace Eigen;
@@ -45,6 +53,7 @@ protected:
   Matrix6d M_, D_, K_;
   Eigen::VectorXd B_;
   Eigen::VectorXd C_;
+  Eigen::VectorXd B_orig_;
 
   // Subscribers:
   ros::Subscriber sub_arm_state_;
@@ -64,6 +73,7 @@ protected:
   Vector6d      wrench_external_;
   Vector6d      arm_desired_twist_adm_;
   Vector6d      arm_desired_accelaration;
+  Vector6d      last_published_twist_;
 
   Vector7d      desired_pose_;
   Vector3d      desired_pose_position_;
@@ -92,8 +102,6 @@ protected:
   double max_Z_height_;
   bool z_limit_warned_;
 
-  Vector6d last_published_twist_;
-
   double force_x_pre, force_y_pre, force_z_pre;
   double torque_x_pre, torque_y_pre, torque_z_pre;
   double D_z0, A_z0, B_z0;
@@ -105,6 +113,15 @@ protected:
   double last_acceleration_x_;
   double last_acceleration_y_;
   double last_acceleration_z_;
+
+  // behavior framework
+  std::vector<std::shared_ptr<Behavior>> behaviors_;
+
+  // // key interface
+  // std::thread key_thread_;
+  // std::atomic_bool key_stop_{false};
+  // struct termios orig_term_{};
+
 public:
   Admittance(ros::NodeHandle &n, double frequency,
                       std::string topic_arm_state,
@@ -118,13 +135,16 @@ public:
                       std::vector<double> desired_pose,
                       double arm_max_vel,
                       double arm_max_acc,
+                      double arm_max_ang_vel,
+                      double arm_max_ang_acc,
                       double min_Z_height,
                       double max_Z_height,
                       std::string base_link,
                       std::string end_link
                        );
-  ~Admittance(){}
   void run();
+  void triggerBehavior(const std::string& name);
+  void resetAllBehaviors();
 private:
   // Control
   void compute_admittance();
@@ -136,6 +156,10 @@ private:
   bool get_rotation_matrix(Matrix6d & rotation_matrix,
                            tf::TransformListener & listener,
                            std::string from_frame,  std::string to_frame);
+
+  // internal
+  void load_behaviors_from_param();
+
 private:
   std::string   base_link_;
   std::string   end_link_;

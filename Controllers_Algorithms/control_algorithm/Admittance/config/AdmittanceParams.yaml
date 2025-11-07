@@ -17,6 +17,9 @@ stiffness_coupling: [0,0,0,0,0,0,
                      0,0,0,0,0,0,
                      0,0,0,0,0,0]
 
+# coefficients_theta: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+# offset_theta: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
 coefficients_theta: [0.0, 0.0, 0.70, 0.0, 0.0, 0.0]
 offset_theta: [0.0, 0.0, -126, 0.0, 0.0, 0.0]
 
@@ -30,6 +33,8 @@ workspace_limits: [-0.80, 0.80, -0.5, 0.80, 0.30, 0.75]
 
 arm_max_vel: 20
 arm_max_acc: 50
+arm_max_arg_vel: 0.8
+arm_max_arg_acc: 1.5
 
 min_Z_height: -0.183
 max_Z_height: 0.207

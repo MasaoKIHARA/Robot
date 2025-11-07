@@ -128,6 +128,8 @@ include_directories(${EIGEN3_INCLUDE_DIR})
 add_library(${PROJECT_NAME}
   include/${PROJECT_NAME}/Admittance.h
   src/Admittance.cpp
+  src/KneeBucklingBehavior.cpp
+  src/SeatSlidingBehavior.cpp
 )
 target_link_libraries(  ${PROJECT_NAME}
   ${catkin_LIBRARIES}

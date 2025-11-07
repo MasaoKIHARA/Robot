@@ -4,6 +4,8 @@
 
 using namespace Eigen;
 
+typedef Matrix<double, 6, 1> Vector6d;
+
 class Behavior {
 public:
   virtual ~Behavior() {}
