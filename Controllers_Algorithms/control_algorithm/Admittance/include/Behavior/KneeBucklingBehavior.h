@@ -15,6 +15,7 @@ public:
 
   // parameter
   std::string mode;        // "impulse" or "reduce_B"
+  double impulse_force_y;  // [N] 
   double impulse_force_z;  // [N] 
   double impulse_duration; // [s]
   double b_min_scale;      // minimum scale when reduce_B(0..1)

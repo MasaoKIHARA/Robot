@@ -27,8 +27,7 @@ int main(int argc, char **argv)
     double arm_max_ang_vel;
     double arm_max_ang_acc;
 
-    double min_Z_height;
-    double max_Z_height;
+    std::vector<double> workspace_limits;
 
 
     // LOADING PARAMETERS FROM THE ROS SERVER 
@@ -48,8 +47,7 @@ int main(int argc, char **argv)
     if (!nh.getParam("arm_max_acc", arm_max_acc)) { ROS_ERROR("Couldn't retrieve the max acceleration for the arm."); return -1;}
     if (!nh.getParam("arm_max_ang_vel", arm_max_ang_vel)) { ROS_ERROR("Couldn't retrieve the max angular velocity for the arm."); return -1;}
     if (!nh.getParam("arm_max_ang_acc", arm_max_ang_acc)) { ROS_ERROR("Couldn't retrieve the max angular acceleration for the arm."); return -1;}
-    if (!nh.getParam("min_Z_height", min_Z_height)) { ROS_ERROR("Couldn't retrieve the min height of the effector."); return -1;}
-    if (!nh.getParam("max_Z_height", max_Z_height)) { ROS_ERROR("Couldn't retrieve the max height of the effector."); return -1;}
+    if (!nh.getParam("workspace_limits", workspace_limits)) { ROS_ERROR("Couldn't retrieve the workspace limits for the arm."); return -1; }
     if (!nh.getParam("base_link", base_link)) { ROS_ERROR("Couldn't retrieve the base_link."); return -1; }
     if (!nh.getParam("end_link", end_link)) { ROS_ERROR("Couldn't retrieve the end_link."); return -1; } 
 
@@ -65,8 +63,7 @@ int main(int argc, char **argv)
         arm_max_acc,
         arm_max_ang_vel,
         arm_max_ang_acc,
-        min_Z_height,
-        max_Z_height,
+        workspace_limits,
         base_link,
         end_link
     );

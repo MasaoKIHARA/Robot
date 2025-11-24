@@ -1,9 +1,10 @@
 behaviors:
   - name: knee1
     type: KneeBuckling
-    mode: reduce_B          # "impulse" or "reduce_B"
-    impulse_force_z: -60.0  # mode: for impulse (N)
-    impulse_duration: 0.03  # [s]
+    mode: impulse          # "impulse" or "reduce_B"
+    impulse_force_y: 23.35 #46.7/2  # mode: for impulse (N)
+    impulse_force_z: 274.9 #549.8/2  # mode: for impulse (N)
+    impulse_duration: 0.15    # [s]
     b_min_scale: 0.2        # mode: for reduce_B
     b_fall_time: 0.05       # [s]
     b_hold_time: 0.20       # [s]

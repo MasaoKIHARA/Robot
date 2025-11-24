@@ -2,7 +2,7 @@
 #include <algorithm>
 
 KneeBucklingBehavior::KneeBucklingBehavior(const std::string& n)
-: mode("impulse"), impulse_force_z(-80.0), impulse_duration(0.03),
+: mode("impulse"), impulse_force_y(-80.0),impulse_force_z(-80.0), impulse_duration(0.03),
   b_min_scale(0.2), b_fall_time(0.05), b_hold_time(0.2), b_rise_time(0.2),
   name_(n), active_(false), elapsed_(0.0), b_scale_(1.0)
 {
@@ -30,7 +30,8 @@ void KneeBucklingBehavior::update(double /*t*/, double dt) {
   if (mode == "impulse") {
     if (elapsed_ <= impulse_duration) {
       wrench_.setZero();
-      wrench_(2) = impulse_force_z; // z方向
+      wrench_(1) = impulse_force_y; // 矢状方向
+      wrench_(2) = impulse_force_z; // 鉛直方向
     } else {
       wrench_.setZero();
       active_ = false;

@@ -98,9 +98,7 @@ protected:
   double arm_max_acc_;
   double arm_max_ang_vel_;
   double arm_max_ang_acc_;
-  double min_Z_height_;
-  double max_Z_height_;
-  bool z_limit_warned_;
+  std::vector<double> workspace_limits_;
 
   double force_x_pre, force_y_pre, force_z_pre;
   double torque_x_pre, torque_y_pre, torque_z_pre;
@@ -137,8 +135,7 @@ public:
                       double arm_max_acc,
                       double arm_max_ang_vel,
                       double arm_max_ang_acc,
-                      double min_Z_height,
-                      double max_Z_height,
+                      std::vector<double> workspace_limits,
                       std::string base_link,
                       std::string end_link
                        );

@@ -17,14 +17,13 @@ Admittance::Admittance(ros::NodeHandle &n,
     double arm_max_acc,
     double arm_max_ang_vel,
     double arm_max_ang_acc,
-    double min_Z_height,
-    double max_Z_height,
+    std::vector<double> workspace_limits,
     std::string base_link,
     std::string end_link)://
   nh_(n), loop_rate_(frequency),
   M_(M.data()), D_(D.data()),K_(K.data()),desired_pose_(desired_pose.data()),
   arm_max_vel_(arm_max_vel), arm_max_acc_(arm_max_acc), arm_max_ang_vel_(arm_max_ang_vel), arm_max_ang_acc_(arm_max_ang_acc), 
-  min_Z_height_(min_Z_height), max_Z_height_(max_Z_height), z_limit_warned_(false),
+  workspace_limits_(workspace_limits),
   base_link_(base_link), end_link_(end_link){
 
   //* Subscribers
@@ -147,14 +146,18 @@ void Admittance::compute_admittance() {
   double dt = loop_rate_.expectedCycleTime().toSec(); // time interval
   double tnow = ros::Time::now().toSec();             // current time
 
+  Matrix6d rotation_ft_base;
+  get_rotation_matrix(rotation_ft_base, listener_ft_, base_link_, end_link_);
+
   Vector6d ext_from_behaviors = Vector6d::Zero();
   double b_scale_total = 1.0;
-  for (auto& b : behaviors_) {
-    b->update(tnow, dt);
-    ext_from_behaviors += b->externalWrench();              // ExternalWrench installed
-    b_scale_total = std::min(b_scale_total, b->BScale());   // B_ by patient model renewed
+  if (wrench_external_.norm() > 1.0) {
+    for (auto& b : behaviors_) {
+      b->update(tnow, dt);
+      ext_from_behaviors += rotation_ft_base * b->externalWrench();              // ExternalWrench installed
+      b_scale_total = std::min(b_scale_total, b->BScale());   // B_ by patient model renewed
+    }
   }
-
   // Translation error w.r.t. desired equilibrium
   Vector6d coupling_wrench_arm;
 
@@ -231,19 +234,64 @@ void Admittance::compute_admittance() {
   last_acceleration_y_ = arm_desired_twist_adm_(1);
   last_acceleration_z_ = arm_desired_twist_adm_(2);
 
-  // Z limitation
-  if (arm_position_(2) <= min_Z_height_ && wrench_external_(2) + F_pat_(2) < 0){
-    arm_desired_twist_adm_.setZero();
-    if (!z_limit_warned_) {
-       ROS_WARN("[Admittance] Effector Z (%.3f) <= min_z_height (%.3f): All arm commands set to 0", arm_position_(2), min_Z_height_);
-       z_limit_warned_ = true;
-    } 
+  // Workspace limits enforcement
+  double x     = arm_position_(0);
+  double y     = arm_position_(1);
+  double z     = arm_position_(2);
+  double x_min = workspace_limits_[0];
+  double x_max = workspace_limits_[1];
+  double y_min = workspace_limits_[2];
+  double y_max = workspace_limits_[3];
+  double z_min = workspace_limits_[4];
+  double z_max = workspace_limits_[5];
+  const double margin = workspace_limits_[6];
+  bool in_margin = false;
+  bool out_of_bounds = false;
+  bool opposite_force = false;
+
+  if (z <= z_min + margin || z >= z_max - margin || y <= y_min + margin || y >= y_max - margin || x <= x_min + margin || x >= x_max - margin) {
+    in_margin = true;
+    if (z <= z_min || z >= z_max || y <= y_min || y >= y_max || x <= x_min || x >= x_max) {
+      out_of_bounds = true;
+    }
+    if ( (z <= z_min + margin && arm_desired_twist_adm_(2) < 0) ||
+         (z >= z_max - margin && arm_desired_twist_adm_(2) > 0) ||
+         (y <= y_min + margin && arm_desired_twist_adm_(1) < 0) ||
+         (y >= y_max - margin && arm_desired_twist_adm_(1) > 0) ||
+         (x <= x_min + margin && arm_desired_twist_adm_(0) < 0) ||
+         (x >= x_max - margin && arm_desired_twist_adm_(0) > 0) ) {
+      opposite_force = true;
+    }
   }
-  else{
-    if (z_limit_warned_) {
-       ROS_INFO("[Admittance] Effector Z height (%.3f) recovered above min_z_height (%.3f): Control resumes", arm_position_(2), min_Z_height_);
-       z_limit_warned_ = false;
-    } 
+
+  if (in_margin) {
+    if (out_of_bounds) {
+      // Hard Floor
+      if (opposite_force) {
+        for(int i=0;i<6;i++){
+          arm_desired_twist_adm_(i) = 0;
+        }
+      }
+    }
+    else{
+      // soft floor
+      if (opposite_force) {
+        std::vector<double> vals = {  (z - z_min) / margin, (z_max - z) / margin,
+                                      (y - y_min) / margin, (y_max - y) / margin,
+                                      (x - x_min) / margin, (x_max - x) / margin};
+        double scale = *std::min_element(vals.begin(), vals.end()); // 0..1
+        scale = std::max(0.0, std::min(1.0, scale));
+        if (z >= z_max - margin){
+          arm_desired_twist_adm_(2) *= scale;
+        }
+        else {
+          for(int i=0;i<6;i++){
+            arm_desired_twist_adm_(i) *= scale;
+          }
+        }
+      }
+
+    }
   }
 }
 
@@ -437,6 +485,7 @@ void Admittance::load_behaviors_from_param() {
     if (type == "KneeBuckling") {
       auto kb = std::make_shared<KneeBucklingBehavior>(name);
       if (arr[i].hasMember("mode")) kb->mode = static_cast<std::string>(arr[i]["mode"]);
+      if (arr[i].hasMember("impulse_force_y")) kb->impulse_force_y = static_cast<double>(arr[i]["impulse_force_y"]);
       if (arr[i].hasMember("impulse_force_z")) kb->impulse_force_z = static_cast<double>(arr[i]["impulse_force_z"]);
       if (arr[i].hasMember("impulse_duration")) kb->impulse_duration = static_cast<double>(arr[i]["impulse_duration"]);
       if (arr[i].hasMember("b_min_scale")) kb->b_min_scale = static_cast<double>(arr[i]["b_min_scale"]);
