@@ -1,14 +1,10 @@
 behaviors:
   - name: knee1
     type: KneeBuckling
-    mode: impulse          # "impulse" or "reduce_B"
-    impulse_force_y: 23.35 #46.7/2  # mode: for impulse (N)
-    impulse_force_z: 274.9 #549.8/2  # mode: for impulse (N)
-    impulse_duration: 0.15    # [s]
-    b_min_scale: 0.2        # mode: for reduce_B
-    b_fall_time: 0.05       # [s]
-    b_hold_time: 0.20       # [s]
-    b_rise_time: 0.20       # [s]
+    impulse_force_y: 23.3 #46.7
+    impulse_force_z: 274.9 #549.8
+    impulse_duration: 0.30    # [s]
+    b_fall_time: 0.2       # [s]
 
   - name: slide1
     type: SeatSliding

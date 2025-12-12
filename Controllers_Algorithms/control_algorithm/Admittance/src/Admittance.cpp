@@ -150,12 +150,10 @@ void Admittance::compute_admittance() {
   get_rotation_matrix(rotation_ft_base, listener_ft_, base_link_, end_link_);
 
   Vector6d ext_from_behaviors = Vector6d::Zero();
-  double b_scale_total = 1.0;
   if (wrench_external_.norm() > 1.0) {
     for (auto& b : behaviors_) {
       b->update(tnow, dt);
       ext_from_behaviors += rotation_ft_base * b->externalWrench();              // ExternalWrench installed
-      b_scale_total = std::min(b_scale_total, b->BScale());   // B_ by patient model renewed
     }
   }
   // Translation error w.r.t. desired equilibrium
@@ -213,8 +211,7 @@ void Admittance::compute_admittance() {
  
  // patient model
   double theta = latest_waist_angle_;	
-  Eigen::VectorXd B_eff = B_orig_ * b_scale_total;
-  Eigen::VectorXd F_pat_ = B_eff * theta + C_;
+  Eigen::VectorXd F_pat_ = B_orig_ * theta + C_;
 
   coupling_wrench_arm=  D_ * (arm_desired_twist_adm_) + K_*error;
   arm_desired_accelaration = M_.inverse() * ( - coupling_wrench_arm  + (wrench_external_ + ext_from_behaviors) + F_pat_);
@@ -484,14 +481,10 @@ void Admittance::load_behaviors_from_param() {
     std::string name = static_cast<std::string>(arr[i]["name"]);
     if (type == "KneeBuckling") {
       auto kb = std::make_shared<KneeBucklingBehavior>(name);
-      if (arr[i].hasMember("mode")) kb->mode = static_cast<std::string>(arr[i]["mode"]);
       if (arr[i].hasMember("impulse_force_y")) kb->impulse_force_y = static_cast<double>(arr[i]["impulse_force_y"]);
       if (arr[i].hasMember("impulse_force_z")) kb->impulse_force_z = static_cast<double>(arr[i]["impulse_force_z"]);
       if (arr[i].hasMember("impulse_duration")) kb->impulse_duration = static_cast<double>(arr[i]["impulse_duration"]);
-      if (arr[i].hasMember("b_min_scale")) kb->b_min_scale = static_cast<double>(arr[i]["b_min_scale"]);
       if (arr[i].hasMember("b_fall_time")) kb->b_fall_time = static_cast<double>(arr[i]["b_fall_time"]);
-      if (arr[i].hasMember("b_hold_time")) kb->b_hold_time = static_cast<double>(arr[i]["b_hold_time"]);
-      if (arr[i].hasMember("b_rise_time")) kb->b_rise_time = static_cast<double>(arr[i]["b_rise_time"]);
       behaviors_.push_back(kb);
     } else if (type == "SeatSliding") {
       auto sb = std::make_shared<SeatSlidingBehavior>(name);

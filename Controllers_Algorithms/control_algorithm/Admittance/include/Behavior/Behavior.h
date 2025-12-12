@@ -15,9 +15,6 @@ public:
 
   virtual Vector6d externalWrench() const { return Vector6d::Zero(); }
 
-  // patient model B_ Scaling
-  virtual double BScale() const { return 1.0; }
-
   virtual void trigger() = 0;
   virtual void reset() = 0;
 
