@@ -158,6 +158,8 @@ private:
   void load_behaviors_from_param();
   void keyboardLoop();
 
+  std::vector<ros::Timer> behavior_delayed_timers_;
+
 private:
   std::string   base_link_;
   std::string   end_link_;

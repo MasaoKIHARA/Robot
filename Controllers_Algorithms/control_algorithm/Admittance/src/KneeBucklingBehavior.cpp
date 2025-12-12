@@ -32,7 +32,14 @@ void KneeBucklingBehavior::update(double /*t*/, double dt) {
       wrench_.setZero();
       wrench_(1) = impulse_force_y; // 矢状方向
       wrench_(2) = impulse_force_z; // 鉛直方向
-    } else {
+    }
+    else if (elapsed_ <= b_fall_time + impulse_duration) {
+      wrench_.setZero();
+      wrench_(1) = impulse_force_y * (b_fall_time + impulse_duration - elapsed_)/b_fall_time;
+      wrench_(2) = impulse_force_z * (b_fall_time + impulse_duration - elapsed_)/b_fall_time;
+    }
+    
+    else {
       wrench_.setZero();
       active_ = false;
     }

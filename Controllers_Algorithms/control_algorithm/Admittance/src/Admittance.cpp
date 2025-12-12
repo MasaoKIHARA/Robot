@@ -503,9 +503,14 @@ void Admittance::load_behaviors_from_param() {
 }
 
 void Admittance::triggerBehavior(const std::string& name) {
-    for (auto& b : behaviors_) {
+  for (auto& b : behaviors_) {
     if (b->name() == name) {
-      b->trigger(); ROS_INFO("Triggered behavior: %s", name.c_str());
+      double delay_sec = 2.0; // seconds
+      ros::Timer t = nh_.createTimer(ros::Duration(delay_sec),[this, b](const ros::TimerEvent&){
+        b->trigger();
+        ROS_INFO("Triggered behavior: %s", b->name().c_str());
+      }, true);
+      behavior_delayed_timers_.push_back(t);
       return;
     }
   }
