@@ -23,7 +23,7 @@ void KneeBucklingBehavior::reset() {
 }
 
 void KneeBucklingBehavior::update(double /*t*/, double dt) {
-  if (!active_) { wrench_.setZero(); b_scale_ = 1.0; return; }
+  if (!active_) { wrench_.setZero(); return; }
   elapsed_ += dt;
 
   if (elapsed_ <= impulse_duration) {
@@ -36,12 +36,10 @@ void KneeBucklingBehavior::update(double /*t*/, double dt) {
     wrench_(1) = impulse_force_y * (b_fall_time + impulse_duration - elapsed_)/b_fall_time;
     wrench_(2) = impulse_force_z * (b_fall_time + impulse_duration - elapsed_)/b_fall_time;
   }
-  
   else {
     wrench_.setZero();
     active_ = false;
   }
-  b_scale_ = 1.0;
 }
 
 Vector6d KneeBucklingBehavior::externalWrench() const {

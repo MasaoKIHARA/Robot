@@ -155,6 +155,7 @@ private:
                            std::string from_frame,  std::string to_frame);
 
   // internal
+  double delay_sec;
   void load_behaviors_from_param();
   void keyboardLoop();
 

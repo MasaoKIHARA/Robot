@@ -1,3 +1,5 @@
+delay_sec: 0.0    # [s]
+
 behaviors:
   - name: knee1
     type: KneeBuckling
@@ -8,5 +10,5 @@ behaviors:
 
   - name: slide1
     type: SeatSliding
-    slide_force_x: 25.0     # [N] (start form small value)
-    duration: 0.8           # [s]
+    slide_force_y: 30.0     # [N] (start form small value)
+    duration: 2.0           # [s]

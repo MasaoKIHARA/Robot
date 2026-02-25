@@ -469,6 +469,7 @@ bool Admittance::get_rotation_matrix(Matrix6d & rotation_matrix,
 
 void Admittance::load_behaviors_from_param() {
   XmlRpc::XmlRpcValue arr;
+  if (!nh_.getParam("delay_sec", delay_sec)) { ROS_ERROR("Couldn't retrieve the delaytime for behaviors."); return; }
   if (!nh_.getParam("behaviors", arr) || arr.getType() != XmlRpc::XmlRpcValue::TypeArray) {
     auto kb = std::make_shared<KneeBucklingBehavior>("knee_default");
     behaviors_.push_back(kb);
@@ -488,7 +489,7 @@ void Admittance::load_behaviors_from_param() {
       behaviors_.push_back(kb);
     } else if (type == "SeatSliding") {
       auto sb = std::make_shared<SeatSlidingBehavior>(name);
-      if (arr[i].hasMember("slide_force_x")) sb->slide_force_x = static_cast<double>(arr[i]["slide_force_x"]);
+      if (arr[i].hasMember("slide_force_y")) sb->slide_force_y = static_cast<double>(arr[i]["slide_force_y"]);
       if (arr[i].hasMember("duration")) sb->duration = static_cast<double>(arr[i]["duration"]);
       behaviors_.push_back(sb);
     }
@@ -498,7 +499,6 @@ void Admittance::load_behaviors_from_param() {
 void Admittance::triggerBehavior(const std::string& name) {
   for (auto& b : behaviors_) {
     if (b->name() == name) {
-      double delay_sec = 2.0; // seconds
       ros::Timer t = nh_.createTimer(ros::Duration(delay_sec),[this, b](const ros::TimerEvent&){
         b->trigger();
         ROS_INFO("Triggered behavior: %s", b->name().c_str());

@@ -13,7 +13,7 @@ public:
   bool isActive() const override { return active_; }
 
   // parameter
-  double slide_force_x;   // [N]
+  double slide_force_y;   // [N]
   double duration;        // [s]
   bool only_when_lowZ;    // available only when z is low.
   double lowZ_threshold;  // [m]
