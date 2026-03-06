@@ -51,9 +51,6 @@ protected:
 
   // ADMITTANCE PARAMETERS:
   Matrix6d M_, D_, K_;
-  Eigen::VectorXd B_;
-  Eigen::VectorXd C_;
-  Eigen::VectorXd B_orig_;
 
   // Subscribers:
   ros::Subscriber sub_arm_state_;
@@ -128,8 +125,6 @@ public:
                       std::vector<double> M,
                       std::vector<double> D,
                       std::vector<double> K,
-                      std::vector<double> B,
-                      std::vector<double> C,
                       std::vector<double> desired_pose,
                       double arm_max_vel,
                       double arm_max_acc,

@@ -130,6 +130,10 @@ add_library(${PROJECT_NAME}
   src/Admittance.cpp
   src/KneeBucklingBehavior.cpp
   src/SeatSlidingBehavior.cpp
+  src/OutOfLineStandBehavior.cpp
+  src/OutOfLineStSBackBehavior.cpp
+  src/OutOfLineStSSideBehavior.cpp
+  src/StSBehavior.cpp
 )
 target_link_libraries(  ${PROJECT_NAME}
   ${catkin_LIBRARIES}

@@ -1,9 +1,9 @@
 #pragma once
 #include "Behavior/Behavior.h"
 
-class SeatSlidingBehavior : public Behavior {
+class OutOfLineStandBehavior : public Behavior {
 public:
-  explicit SeatSlidingBehavior(const std::string& n);
+  explicit OutOfLineStandBehavior(const std::string& n);
 
   std::string name() const override { return name_; }
   void update(double t, double dt) override;
@@ -13,10 +13,8 @@ public:
   bool isActive() const override { return active_; }
 
   // parameters
-  double force_y;    // [N]
-  double force_z;    // [N]
-  double torque_x;   // [Nm] (pitch)
-  double duration;   // [s]
+  double force_x;   // [N]
+  double duration;  // [s]
 
 private:
   std::string name_;

@@ -1,9 +1,9 @@
 #pragma once
 #include "Behavior/Behavior.h"
 
-class SeatSlidingBehavior : public Behavior {
+class OutOfLineStSBackBehavior : public Behavior {
 public:
-  explicit SeatSlidingBehavior(const std::string& n);
+  explicit OutOfLineStSBackBehavior(const std::string& n);
 
   std::string name() const override { return name_; }
   void update(double t, double dt) override;

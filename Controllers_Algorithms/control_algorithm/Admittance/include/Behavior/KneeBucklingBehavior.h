@@ -12,16 +12,14 @@ public:
   void reset() override;
   bool isActive() const override { return active_; }
 
-  // parameter
-  double impulse_force_y;  // [N] 
-  double impulse_force_z;  // [N] 
-  double impulse_duration; // [s]
-  double b_fall_time;      // [s]
+  // parameters
+  double force_y;   // [N]
+  double force_z;   // [N]
+  double duration;  // [s]
 
 private:
   std::string name_;
   bool active_;
   double elapsed_;     // passed time from trigger [s]
   Vector6d wrench_;
-  double b_scale_;
 };

@@ -1,6 +1,10 @@
 #include "Admittance/Admittance.h"
 #include "Behavior/KneeBucklingBehavior.h"
 #include "Behavior/SeatSlidingBehavior.h"
+#include "Behavior/OutOfLineStandBehavior.h"
+#include "Behavior/OutOfLineStSBackBehavior.h"
+#include "Behavior/OutOfLineStSSideBehavior.h"
+#include "Behavior/StSBehavior.h"
 
 Admittance::Admittance(ros::NodeHandle &n,
     double frequency,
@@ -10,8 +14,6 @@ Admittance::Admittance(ros::NodeHandle &n,
     std::vector<double> M,
     std::vector<double> D,
     std::vector<double> K,
-    std::vector<double> B,
-    std::vector<double> C,
     std::vector<double> desired_pose,
     double arm_max_vel,
     double arm_max_acc,
@@ -74,11 +76,6 @@ Admittance::Admittance(ros::NodeHandle &n,
   torque_y_pre = 0;
   torque_z_pre = 0;
   wait_for_transformations();
-
-  // Convert std::vector to Eigen::VectorXd
-  B_ = Eigen::Map<const Eigen::VectorXd>(B.data(), B.size());
-  C_ = Eigen::Map<const Eigen::VectorXd>(C.data(), C.size());
-  B_orig_ = B_;
 
   // load behaviors
   load_behaviors_from_param();
@@ -150,7 +147,7 @@ void Admittance::compute_admittance() {
   get_rotation_matrix(rotation_ft_base, listener_ft_, base_link_, end_link_);
 
   Vector6d ext_from_behaviors = Vector6d::Zero();
-  if (wrench_external_.norm() > 1.0) {
+  if (wrench_external_.norm() > -10.0) {
     for (auto& b : behaviors_) {
       b->update(tnow, dt);
       ext_from_behaviors += rotation_ft_base * b->externalWrench();              // ExternalWrench installed
@@ -208,13 +205,8 @@ void Admittance::compute_admittance() {
 
 
  // Determine the desired_accelaration
- 
- // patient model
-  double theta = latest_waist_angle_;	
-  Eigen::VectorXd F_pat_ = B_orig_ * theta + C_;
-
   coupling_wrench_arm=  D_ * (arm_desired_twist_adm_) + K_*error;
-  arm_desired_accelaration = M_.inverse() * ( - coupling_wrench_arm  + (wrench_external_ + ext_from_behaviors) + F_pat_);
+  arm_desired_accelaration = M_.inverse() * ( - coupling_wrench_arm  + (wrench_external_ - ext_from_behaviors));
 
   double a_acc_norm = (arm_desired_accelaration.segment(0, 3)).norm();
 
@@ -235,13 +227,16 @@ void Admittance::compute_admittance() {
   double x     = arm_position_(0);
   double y     = arm_position_(1);
   double z     = arm_position_(2);
+  double phi   = arm_orientation_.toRotationMatrix().eulerAngles(0, 1, 2)[0];
   double x_min = workspace_limits_[0];
   double x_max = workspace_limits_[1];
   double y_min = workspace_limits_[2];
   double y_max = workspace_limits_[3];
   double z_min = workspace_limits_[4];
   double z_max = workspace_limits_[5];
-  const double margin = workspace_limits_[6];
+  double phi_min = workspace_limits_[6];
+  double phi_max = workspace_limits_[7];
+  const double margin = workspace_limits_[8];
   bool in_margin = false;
   bool out_of_bounds = false;
   bool opposite_force = false;
@@ -256,7 +251,7 @@ void Admittance::compute_admittance() {
          (y <= y_min + margin && arm_desired_twist_adm_(1) < 0) ||
          (y >= y_max - margin && arm_desired_twist_adm_(1) > 0) ||
          (x <= x_min + margin && arm_desired_twist_adm_(0) < 0) ||
-         (x >= x_max - margin && arm_desired_twist_adm_(0) > 0) ) {
+         (x >= x_max - margin && arm_desired_twist_adm_(0) > 0)) {
       opposite_force = true;
     }
   }
@@ -321,8 +316,9 @@ void Admittance::state_wrench_callback(
     wrench_ft_frame <<  msg->wrench.force.x,
                         msg->wrench.force.y,
                         msg->wrench.force.z,
-                        0,0,
                         // msg->wrench.torque.x,
+                        0,
+                        0,
                         // msg->wrench.torque.y,
                         msg->wrench.torque.z;
 
@@ -481,17 +477,46 @@ void Admittance::load_behaviors_from_param() {
     std::string type = static_cast<std::string>(arr[i]["type"]);
     std::string name = static_cast<std::string>(arr[i]["name"]);
     if (type == "KneeBuckling") {
-      auto kb = std::make_shared<KneeBucklingBehavior>(name);
-      if (arr[i].hasMember("impulse_force_y")) kb->impulse_force_y = static_cast<double>(arr[i]["impulse_force_y"]);
-      if (arr[i].hasMember("impulse_force_z")) kb->impulse_force_z = static_cast<double>(arr[i]["impulse_force_z"]);
-      if (arr[i].hasMember("impulse_duration")) kb->impulse_duration = static_cast<double>(arr[i]["impulse_duration"]);
-      if (arr[i].hasMember("b_fall_time")) kb->b_fall_time = static_cast<double>(arr[i]["b_fall_time"]);
-      behaviors_.push_back(kb);
+      auto b = std::make_shared<KneeBucklingBehavior>(name);
+      if (arr[i].hasMember("force_y"))  b->force_y  = static_cast<double>(arr[i]["force_y"]);
+      if (arr[i].hasMember("force_z"))  b->force_z  = static_cast<double>(arr[i]["force_z"]);
+      if (arr[i].hasMember("duration")) b->duration = static_cast<double>(arr[i]["duration"]);
+      behaviors_.push_back(b);
     } else if (type == "SeatSliding") {
-      auto sb = std::make_shared<SeatSlidingBehavior>(name);
-      if (arr[i].hasMember("slide_force_y")) sb->slide_force_y = static_cast<double>(arr[i]["slide_force_y"]);
-      if (arr[i].hasMember("duration")) sb->duration = static_cast<double>(arr[i]["duration"]);
-      behaviors_.push_back(sb);
+      auto b = std::make_shared<SeatSlidingBehavior>(name);
+      if (arr[i].hasMember("force_y"))  b->force_y  = static_cast<double>(arr[i]["force_y"]);
+      if (arr[i].hasMember("force_z"))  b->force_z  = static_cast<double>(arr[i]["force_z"]);
+      if (arr[i].hasMember("torque_x")) b->torque_x = static_cast<double>(arr[i]["torque_x"]);
+      if (arr[i].hasMember("duration")) b->duration = static_cast<double>(arr[i]["duration"]);
+      behaviors_.push_back(b);
+    } else if (type == "OutOfLineStand") {
+      auto b = std::make_shared<OutOfLineStandBehavior>(name);
+      if (arr[i].hasMember("force_x"))  b->force_x  = static_cast<double>(arr[i]["force_x"]);
+      if (arr[i].hasMember("duration")) b->duration = static_cast<double>(arr[i]["duration"]);
+      behaviors_.push_back(b);
+    } else if (type == "OutOfLineStSBack") {
+      auto b = std::make_shared<OutOfLineStSBackBehavior>(name);
+      if (arr[i].hasMember("force_y"))  b->force_y  = static_cast<double>(arr[i]["force_y"]);
+      if (arr[i].hasMember("force_z"))  b->force_z  = static_cast<double>(arr[i]["force_z"]);
+      if (arr[i].hasMember("torque_x")) b->torque_x = static_cast<double>(arr[i]["torque_x"]);
+      if (arr[i].hasMember("duration")) b->duration = static_cast<double>(arr[i]["duration"]);
+      behaviors_.push_back(b);
+    } else if (type == "OutOfLineStSSide") {
+      auto b = std::make_shared<OutOfLineStSSideBehavior>(name);
+      if (arr[i].hasMember("force_x"))  b->force_x  = static_cast<double>(arr[i]["force_x"]);
+      if (arr[i].hasMember("force_y"))  b->force_y  = static_cast<double>(arr[i]["force_y"]);
+      if (arr[i].hasMember("force_z"))  b->force_z  = static_cast<double>(arr[i]["force_z"]);
+      if (arr[i].hasMember("torque_y")) b->torque_y = static_cast<double>(arr[i]["torque_y"]);
+      if (arr[i].hasMember("duration")) b->duration = static_cast<double>(arr[i]["duration"]);
+      behaviors_.push_back(b);
+    } else if (type == "StS") {
+      auto b = std::make_shared<StSBehavior>(name);
+      if (arr[i].hasMember("force_y"))  b->force_y  = static_cast<double>(arr[i]["force_y"]);
+      if (arr[i].hasMember("force_z"))  b->force_z  = static_cast<double>(arr[i]["force_z"]);
+      if (arr[i].hasMember("duration")) b->duration = static_cast<double>(arr[i]["duration"]);
+      behaviors_.push_back(b);
+    } else {
+      ROS_WARN("Unknown behavior type: %s", type.c_str());
     }
   }
 }
@@ -526,7 +551,7 @@ void Admittance::keyboardLoop() {
     tcsetattr(STDIN_FILENO, TCSANOW, &raw);
   }
 
-  ROS_INFO("Keyboard: press 'k' (knee), 's' (slide), 'r' (reset).");
+  ROS_INFO("Keyboard: press 'k' (knee), 's' (slide), 'o' (OOL_stand), 'b' (OOL_StS_back), 'l' (OOL_StS_side), 't' (StS), 'r' (reset).");
 
   while (ros::ok() && !key_stop_) {
     fd_set set;
@@ -539,9 +564,17 @@ void Admittance::keyboardLoop() {
       ssize_t n = read(STDIN_FILENO, &c, 1);
       if (n == 1) {
         if (c == 'k') {
-          triggerBehavior("knee1"); // set name by YAML
+          triggerBehavior("knee1");
         } else if (c == 's') {
           triggerBehavior("slide1");
+        } else if (c == 'o') {
+          triggerBehavior("ool_stand1");
+        } else if (c == 'b') {
+          triggerBehavior("ool_sts_back1");
+        } else if (c == 'l') {
+          triggerBehavior("ool_sts_side1");
+        } else if (c == 't') {
+          triggerBehavior("sts1");
         } else if (c == 'r') {
           resetAllBehaviors();
         }
