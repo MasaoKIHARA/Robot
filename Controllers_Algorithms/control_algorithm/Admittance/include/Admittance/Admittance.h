@@ -109,6 +109,13 @@ protected:
   double last_acceleration_y_;
   double last_acceleration_z_;
 
+  // Rotation admittance (1D per axis)
+  double m_yaw_, d_yaw_, k_yaw_;       // yaw (base z-axis) parameters
+  double m_pitch_, d_pitch_, k_pitch_;  // pitch (EE x-axis) parameters
+  double v_yaw_ = 0.0;                 // yaw angular velocity state
+  double v_pitch_ = 0.0;               // pitch angular velocity state
+  Eigen::Vector3d ee_x_in_base_;       // cached EE x-axis in base frame
+
   // behavior framework
   std::vector<std::shared_ptr<Behavior>> behaviors_;
   bool was_any_behavior_active_ = false;

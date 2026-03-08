@@ -28,6 +28,14 @@ arm_max_acc: 50
 arm_max_ang_vel: 0.8
 arm_max_ang_acc: 1.5
 
+# Rotation admittance (1D per axis)
+m_yaw: 1.0
+d_yaw: 1.0
+k_yaw: 0.0
+m_pitch: 1.0
+d_pitch: 10.0
+k_pitch: 0.0
+
 workspace_limits: [-0.80, 0.80, -1.4, -0.45, -0.183, 0.207, -0.50, 0.50, 0.05] # [x_min, x_max, y_min, y_max, z_min, z_max, phi_min, phi_max, margin]
 
 # robot base height is 793mm from ground

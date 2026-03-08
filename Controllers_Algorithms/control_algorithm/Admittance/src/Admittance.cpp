@@ -75,6 +75,16 @@ Admittance::Admittance(ros::NodeHandle &n,
   torque_x_pre = 0;
   torque_y_pre = 0;
   torque_z_pre = 0;
+
+  // Load rotation admittance parameters (yaw: base z-axis, pitch: EE x-axis)
+  if (!nh_.getParam("m_yaw", m_yaw_)) { m_yaw_ = 1.0; ROS_WARN("m_yaw not set, defaulting to 1.0"); }
+  if (!nh_.getParam("d_yaw", d_yaw_)) { d_yaw_ = 1.0; ROS_WARN("d_yaw not set, defaulting to 1.0"); }
+  if (!nh_.getParam("k_yaw", k_yaw_)) { k_yaw_ = 0.0; ROS_WARN("k_yaw not set, defaulting to 0.0"); }
+  if (!nh_.getParam("m_pitch", m_pitch_)) { m_pitch_ = 1.0; ROS_WARN("m_pitch not set, defaulting to 1.0"); }
+  if (!nh_.getParam("d_pitch", d_pitch_)) { d_pitch_ = 10.0; ROS_WARN("d_pitch not set, defaulting to 10.0"); }
+  if (!nh_.getParam("k_pitch", k_pitch_)) { k_pitch_ = 0.0; ROS_WARN("k_pitch not set, defaulting to 0.0"); }
+  ee_x_in_base_ = Eigen::Vector3d::UnitX();
+
   wait_for_transformations();
 
   // load behaviors
@@ -139,6 +149,11 @@ void Admittance::compute_admittance() {
   Eigen::AngleAxisd err_arm_des_orient(quat_rot_err);
   error.bottomRows(3) << err_arm_des_orient.axis() * err_arm_des_orient.angle();
 
+  // Decompose rotation error into yaw (base z) and pitch (EE x) components
+  ee_x_in_base_ = arm_orientation_.toRotationMatrix().col(0);
+  double e_yaw = error.tail(3).dot(Eigen::Vector3d::UnitZ());
+  double e_pitch = error.tail(3).dot(ee_x_in_base_);
+
   // Behavor renewing and effects collection
   double dt = loop_rate_.expectedCycleTime().toSec(); // time interval
   double tnow = ros::Time::now().toSec();             // current time
@@ -158,6 +173,8 @@ void Admittance::compute_admittance() {
   // Reset velocity when all behaviors just finished
   if (was_any_behavior_active_ && !any_behavior_active) {
     arm_desired_twist_adm_.setZero();
+    v_yaw_ = 0.0;
+    v_pitch_ = 0.0;
   }
   was_any_behavior_active_ = any_behavior_active;
   // Translation error w.r.t. desired equilibrium
@@ -211,9 +228,11 @@ void Admittance::compute_admittance() {
   vac_pub_.publish(vac_msg);
 
 
- // Determine the desired_accelaration
-  coupling_wrench_arm=  D_ * (arm_desired_twist_adm_) + K_*error;
-  arm_desired_accelaration = M_.inverse() * ( - coupling_wrench_arm  + (wrench_external_ - ext_from_behaviors));
+  // --- Translation 3D admittance ---
+  coupling_wrench_arm.head(3) = D_.topLeftCorner(3,3) * arm_desired_twist_adm_.head(3)
+                              + K_.topLeftCorner(3,3) * error.head(3);
+  arm_desired_accelaration.head(3) = M_.topLeftCorner(3,3).inverse()
+      * (-coupling_wrench_arm.head(3) + wrench_external_.head(3) - ext_from_behaviors.head(3));
 
   double a_acc_norm = (arm_desired_accelaration.segment(0, 3)).norm();
 
@@ -223,12 +242,28 @@ void Admittance::compute_admittance() {
     arm_desired_accelaration.segment(0, 3) *= (arm_max_acc_ / a_acc_norm);
   }
 
-  // Integrate for velocity based interface
+  // Integrate translation
   ros::Duration duration = loop_rate_.expectedCycleTime();
-  arm_desired_twist_adm_ += arm_desired_accelaration * duration.toSec();
+  arm_desired_twist_adm_.head(3) += arm_desired_accelaration.head(3) * duration.toSec();
   last_acceleration_x_ = arm_desired_twist_adm_(0);
   last_acceleration_y_ = arm_desired_twist_adm_(1);
   last_acceleration_z_ = arm_desired_twist_adm_(2);
+
+  // --- Yaw 1D admittance (rotation around base z-axis) ---
+  double tau_ext_yaw = wrench_external_.tail(3).dot(Eigen::Vector3d::UnitZ())
+                     - ext_from_behaviors.tail(3).dot(Eigen::Vector3d::UnitZ());
+  double a_yaw = (1.0 / m_yaw_) * (-d_yaw_ * v_yaw_ - k_yaw_ * e_yaw + tau_ext_yaw);
+  v_yaw_ += a_yaw * duration.toSec();
+
+  // --- Pitch 1D admittance (rotation around EE x-axis) ---
+  double tau_ext_pitch = wrench_external_.tail(3).dot(ee_x_in_base_)
+                       - ext_from_behaviors.tail(3).dot(ee_x_in_base_);
+  double a_pitch = (1.0 / m_pitch_) * (-d_pitch_ * v_pitch_ - k_pitch_ * e_pitch + tau_ext_pitch);
+  v_pitch_ += a_pitch * duration.toSec();
+
+  // Compose angular velocity in base frame
+  arm_desired_twist_adm_.tail(3) = v_yaw_ * Eigen::Vector3d::UnitZ()
+                                 + v_pitch_ * ee_x_in_base_;
 
   // Contact gate: low-pass filtered scale to avoid chattering
   const double force_low  = 0.0;   // [N]
@@ -245,8 +280,8 @@ void Admittance::compute_admittance() {
   }
   double alpha = dt / (tau + dt);
   contact_scale_filtered_ += alpha * (target_scale - contact_scale_filtered_);
-  arm_desired_twist_adm_ *= contact_scale_filtered_;
-  // arm_desired_twist_adm_ *= (contact_scale_filtered_ + 99.0) / 100.0;
+  // arm_desired_twist_adm_ *= contact_scale_filtered_;
+  arm_desired_twist_adm_.head(3) *= (contact_scale_filtered_ + 99.0) / 100.0;
 
   // Workspace limits enforcement
   const double x = arm_position_(0);
@@ -312,10 +347,8 @@ void Admittance::state_wrench_callback(
     wrench_ft_frame <<  msg->wrench.force.x,
                         msg->wrench.force.y,
                         msg->wrench.force.z,
-                        // msg->wrench.torque.x,
-                        0,
-                        0,
-                        // msg->wrench.torque.y,
+                        msg->wrench.torque.x,
+                        msg->wrench.torque.y,
                         msg->wrench.torque.z;
 
     float force_thres_lower_limit_ = 6;
@@ -418,7 +451,11 @@ void Admittance::send_commands_to_robot() {
     w_new = w_prev + dw;
   }
   arm_desired_twist_adm_.segment(3,3) = w_new;
-  
+
+  // Update rotation integrator states from the limited angular velocity
+  v_yaw_ = arm_desired_twist_adm_.tail(3).dot(Eigen::Vector3d::UnitZ());
+  v_pitch_ = arm_desired_twist_adm_.tail(3).dot(ee_x_in_base_);
+
   geometry_msgs::Twist arm_twist_cmd;
   arm_twist_cmd.linear.x  = arm_desired_twist_adm_(0);
   arm_twist_cmd.linear.y  = arm_desired_twist_adm_(1);
