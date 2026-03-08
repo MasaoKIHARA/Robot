@@ -111,6 +111,10 @@ protected:
 
   // behavior framework
   std::vector<std::shared_ptr<Behavior>> behaviors_;
+  bool was_any_behavior_active_ = false;
+
+  // Contact gate (low-pass filtered)
+  double contact_scale_filtered_ = 0.0;
 
   // key interface
   std::thread key_thread_;

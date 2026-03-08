@@ -147,12 +147,19 @@ void Admittance::compute_admittance() {
   get_rotation_matrix(rotation_ft_base, listener_ft_, base_link_, end_link_);
 
   Vector6d ext_from_behaviors = Vector6d::Zero();
+  bool any_behavior_active = false;
   if (wrench_external_.norm() > -10.0) {
     for (auto& b : behaviors_) {
       b->update(tnow, dt);
-      ext_from_behaviors += rotation_ft_base * b->externalWrench();              // ExternalWrench installed
+      ext_from_behaviors += rotation_ft_base * b->externalWrench();
+      if (b->isActive()) any_behavior_active = true;
     }
   }
+  // Reset velocity when all behaviors just finished
+  if (was_any_behavior_active_ && !any_behavior_active) {
+    arm_desired_twist_adm_.setZero();
+  }
+  was_any_behavior_active_ = any_behavior_active;
   // Translation error w.r.t. desired equilibrium
   Vector6d coupling_wrench_arm;
 
@@ -223,68 +230,57 @@ void Admittance::compute_admittance() {
   last_acceleration_y_ = arm_desired_twist_adm_(1);
   last_acceleration_z_ = arm_desired_twist_adm_(2);
 
+  // Contact gate: low-pass filtered scale to avoid chattering
+  const double force_low  = 0.0;   // [N]
+  const double force_high = 3.0;   // [N]
+  const double tau = 0.15;          // [s] filter time constant
+  double force_norm = wrench_external_.head(3).norm();
+  double target_scale;
+  if (force_norm >= force_high) {
+    target_scale = 1.0;
+  } else if (force_norm <= force_low) {
+    target_scale = 0.0;
+  } else {
+    target_scale = (force_norm - force_low) / (force_high - force_low);
+  }
+  double alpha = dt / (tau + dt);
+  contact_scale_filtered_ += alpha * (target_scale - contact_scale_filtered_);
+  arm_desired_twist_adm_ *= contact_scale_filtered_;
+  // arm_desired_twist_adm_ *= (contact_scale_filtered_ + 99.0) / 100.0;
+
   // Workspace limits enforcement
-  double x     = arm_position_(0);
-  double y     = arm_position_(1);
-  double z     = arm_position_(2);
-  double phi   = arm_orientation_.toRotationMatrix().eulerAngles(0, 1, 2)[0];
-  double x_min = workspace_limits_[0];
-  double x_max = workspace_limits_[1];
-  double y_min = workspace_limits_[2];
-  double y_max = workspace_limits_[3];
-  double z_min = workspace_limits_[4];
-  double z_max = workspace_limits_[5];
-  double phi_min = workspace_limits_[6];
-  double phi_max = workspace_limits_[7];
+  const double x = arm_position_(0);
+  const double y = arm_position_(1);
+  const double z = arm_position_(2);
+
+  const double x_min = workspace_limits_[0], x_max = workspace_limits_[1];
+  const double y_min = workspace_limits_[2], y_max = workspace_limits_[3];
+  const double z_min = workspace_limits_[4], z_max = workspace_limits_[5];
   const double margin = workspace_limits_[8];
-  bool in_margin = false;
-  bool out_of_bounds = false;
-  bool opposite_force = false;
 
-  if (z <= z_min + margin || z >= z_max - margin || y <= y_min + margin || y >= y_max - margin || x <= x_min + margin || x >= x_max - margin) {
-    in_margin = true;
-    if (z <= z_min || z >= z_max || y <= y_min || y >= y_max || x <= x_min || x >= x_max) {
-      out_of_bounds = true;
-    }
-    if ( (z <= z_min + margin && arm_desired_twist_adm_(2) < 0) ||
-         (z >= z_max - margin && arm_desired_twist_adm_(2) > 0) ||
-         (y <= y_min + margin && arm_desired_twist_adm_(1) < 0) ||
-         (y >= y_max - margin && arm_desired_twist_adm_(1) > 0) ||
-         (x <= x_min + margin && arm_desired_twist_adm_(0) < 0) ||
-         (x >= x_max - margin && arm_desired_twist_adm_(0) > 0)) {
-      opposite_force = true;
-    }
-  }
-
-  if (in_margin) {
-    if (out_of_bounds) {
-      // Hard Floor
-      if (opposite_force) {
-        for(int i=0;i<6;i++){
-          arm_desired_twist_adm_(i) = 0;
-        }
+  auto enforce_axis = [&](int axis_idx, double pos, double lo, double hi) {
+    double vel = arm_desired_twist_adm_(axis_idx);
+    if (pos <= lo + margin && vel < 0) {
+      if (pos <= lo) {
+        arm_desired_twist_adm_(axis_idx) = 0;                       // Hard Floor
+      } else {
+        double scale = std::max(0.0, (pos - lo) / margin);          // Soft Floor (0..1)
+        arm_desired_twist_adm_(axis_idx) *= scale;
       }
     }
-    else{
-      // soft floor
-      if (opposite_force) {
-        std::vector<double> vals = {  (z - z_min) / margin, (z_max - z) / margin,
-                                      (y - y_min) / margin, (y_max - y) / margin,
-                                      (x - x_min) / margin, (x_max - x) / margin};
-        double scale = *std::min_element(vals.begin(), vals.end()); // 0..1
-        scale = std::max(0.0, std::min(1.0, scale));
-        if (z >= z_max - margin){
-          arm_desired_twist_adm_(2) *= scale;
-        }
-        else {
-          for(int i=0;i<6;i++){
-            arm_desired_twist_adm_(i) *= scale;
-          }
-        }
+    if (pos >= hi - margin && vel > 0) {
+      if (pos >= hi) {
+        arm_desired_twist_adm_(axis_idx) = 0;                       // Hard Floor
+      } else {
+        double scale = std::max(0.0, (hi - pos) / margin);          // Soft Floor (0..1)
+        arm_desired_twist_adm_(axis_idx) *= scale;
       }
-
     }
-  }
+  };
+
+  enforce_axis(0, x, x_min, x_max);
+  enforce_axis(1, y, y_min, y_max);
+  enforce_axis(2, z, z_min, z_max);
 }
 
 //!-                     CALLBACKS                       -!//
