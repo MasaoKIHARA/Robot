@@ -96,6 +96,7 @@ protected:
   double arm_max_ang_vel_;
   double arm_max_ang_acc_;
   std::vector<double> workspace_limits_;
+  std::vector<double> workspace_floor_limits_;
 
   double force_x_pre, force_y_pre, force_z_pre;
   double torque_x_pre, torque_y_pre, torque_z_pre;

@@ -23,9 +23,9 @@ end_link: "wrist_3_link"
 
 desired_pose:  [0.0,-0.8,0.40,       0.001, 0.99, 0.00, 0.001]
 
-arm_max_vel: 20
-arm_max_acc: 50
-arm_max_ang_vel: 0.8
+arm_max_vel: 0.5
+arm_max_acc: 2.0
+arm_max_ang_vel: 0.5
 arm_max_ang_acc: 1.5
 
 # Rotation admittance (1D per axis)
@@ -36,7 +36,9 @@ m_pitch: 1.0
 d_pitch: 10.0
 k_pitch: 0.0
 
-workspace_limits: [-0.80, 0.80, -1.4, -0.45, -0.183, 0.207, -0.50, 0.50, 0.05] # [x_min, x_max, y_min, y_max, z_min, z_max, phi_min, phi_max, margin]
+workspace_limits: [-0.80, 0.80, -1.4, -0.45, -0.183, 0.207, -2.50, 0.50, 0.05, -0.30, 0.30] # [x_min, x_max, y_min, y_max, z_min, z_max, yaw_min, yaw_max, margin, pitch_min, pitch_max]
+
+workspcae_floor_limits: [0.34, -0.71, -0.40] # [x_edge, y_edge, z_floor]
 
 # robot base height is 793mm from ground
 # normal wheelchair seat height is 460mm from ground

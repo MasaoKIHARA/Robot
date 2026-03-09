@@ -62,10 +62,6 @@ Admittance::Admittance(ros::NodeHandle &n,
   arm_desired_twist_adm_.setZero();
   last_published_twist_.setZero();
 
-  arm_max_ang_vel_ = 0.8; // [rad/s]
-  arm_max_ang_acc_ = 1.5; // [rad/s^2]
-
-
   ft_arm_ready_ = false;
   base_world_ready_ = false;
   world_arm_ready_ = false;
@@ -82,6 +78,7 @@ Admittance::Admittance(ros::NodeHandle &n,
   if (!nh_.getParam("k_yaw", k_yaw_)) { k_yaw_ = 0.0; ROS_WARN("k_yaw not set, defaulting to 0.0"); }
   if (!nh_.getParam("m_pitch", m_pitch_)) { m_pitch_ = 1.0; ROS_WARN("m_pitch not set, defaulting to 1.0"); }
   if (!nh_.getParam("d_pitch", d_pitch_)) { d_pitch_ = 10.0; ROS_WARN("d_pitch not set, defaulting to 10.0"); }
+  if (!nh_.getParam("workspcae_floor_limits", workspace_floor_limits_)) { ROS_WARN("workspcae_floor_limits not set, floor limit disabled"); }
   if (!nh_.getParam("k_pitch", k_pitch_)) { k_pitch_ = 0.0; ROS_WARN("k_pitch not set, defaulting to 0.0"); }
   ee_x_in_base_ = Eigen::Vector3d::UnitX();
 
@@ -227,6 +224,17 @@ void Admittance::compute_admittance() {
   vac_msg.z = var_D_z;     
   vac_pub_.publish(vac_msg);
 
+  // Vertical Force Compensation
+  const double center_x = 0.0263;
+  const double center_y = -0.974;
+  const double center_z = 0.160;
+  const double gain_z = 400; // [N/m^2] adjust this gain to scale the compensation effect
+  auto min_z = [](double a, double b) { return (a < b ? a : b); };
+  auto max_z = [](double a, double b) { return (a > b ? a : b); };
+  double vertical_force_compensation = gain_z * ((arm_position_(0) - center_x)*(arm_position_(0) - center_x)
+                                               + (arm_position_(1) - center_y)*(arm_position_(1) - center_y)
+                                               + max_z(min_z(0.0,arm_position_(2) - center_z),workspace_limits_[4])*max_z(min_z(0.0,arm_position_(2) - center_z),workspace_limits_[4]));
+  wrench_external_(2) -= vertical_force_compensation;
 
   // --- Translation 3D admittance ---
   coupling_wrench_arm.head(3) = D_.topLeftCorner(3,3) * arm_desired_twist_adm_.head(3)
@@ -281,7 +289,7 @@ void Admittance::compute_admittance() {
   double alpha = dt / (tau + dt);
   contact_scale_filtered_ += alpha * (target_scale - contact_scale_filtered_);
   // arm_desired_twist_adm_ *= contact_scale_filtered_;
-  arm_desired_twist_adm_.head(3) *= (contact_scale_filtered_ + 99.0) / 100.0;
+  arm_desired_twist_adm_.head(3) *= (contact_scale_filtered_ + 1.0) / 2.0;
 
   // Workspace limits enforcement
   const double x = arm_position_(0);
@@ -290,8 +298,19 @@ void Admittance::compute_admittance() {
 
   const double x_min = workspace_limits_[0], x_max = workspace_limits_[1];
   const double y_min = workspace_limits_[2], y_max = workspace_limits_[3];
-  const double z_min = workspace_limits_[4], z_max = workspace_limits_[5];
+  double z_min = workspace_limits_[4];
+  const double z_max = workspace_limits_[5];
   const double margin = workspace_limits_[8];
+
+  // If x <= x_edge and y <= y_edge, extend z lower limit to z_floor
+  if (workspace_floor_limits_.size() >= 3) {
+    const double x_edge = workspace_floor_limits_[0];
+    const double y_edge = workspace_floor_limits_[1];
+    const double z_floor = workspace_floor_limits_[2];
+    if (x <= x_edge && y <= y_edge) {
+      z_min = z_floor;
+    }
+  }
 
   auto enforce_axis = [&](int axis_idx, double pos, double lo, double hi) {
     double vel = arm_desired_twist_adm_(axis_idx);
@@ -316,6 +335,50 @@ void Admittance::compute_admittance() {
   enforce_axis(0, x, x_min, x_max);
   enforce_axis(1, y, y_min, y_max);
   enforce_axis(2, z, z_min, z_max);
+
+  // Yaw workspace limits (relative to desired orientation)
+  const double yaw_min = workspace_limits_[6], yaw_max = workspace_limits_[7];
+  const double yaw_margin = 0.05; // [rad]
+  if (e_yaw <= yaw_min + yaw_margin && v_yaw_ < 0) {
+    if (e_yaw <= yaw_min) {
+      v_yaw_ = 0;
+    } else {
+      v_yaw_ *= std::max(0.0, (e_yaw - yaw_min) / yaw_margin);
+    }
+  }
+  if (e_yaw >= yaw_max - yaw_margin && v_yaw_ > 0) {
+    if (e_yaw >= yaw_max) {
+      v_yaw_ = 0;
+    } else {
+      v_yaw_ *= std::max(0.0, (yaw_max - e_yaw) / yaw_margin);
+    }
+  }
+  // Recompose angular velocity after yaw limiting
+  arm_desired_twist_adm_.tail(3) = v_yaw_ * Eigen::Vector3d::UnitZ()
+                                 + v_pitch_ * ee_x_in_base_;
+
+  // Pitch workspace limits (relative to desired orientation)
+  if (workspace_limits_.size() > 10) {
+    const double pitch_min = workspace_limits_[9], pitch_max = workspace_limits_[10];
+    const double pitch_margin = 0.05; // [rad]
+    if (e_pitch <= pitch_min + pitch_margin && v_pitch_ < 0) {
+      if (e_pitch <= pitch_min) {
+        v_pitch_ = 0;
+      } else {
+        v_pitch_ *= std::max(0.0, (e_pitch - pitch_min) / pitch_margin);
+      }
+    }
+    if (e_pitch >= pitch_max - pitch_margin && v_pitch_ > 0) {
+      if (e_pitch >= pitch_max) {
+        v_pitch_ = 0;
+      } else {
+        v_pitch_ *= std::max(0.0, (pitch_max - e_pitch) / pitch_margin);
+      }
+    }
+    // Recompose angular velocity after pitch limiting
+    arm_desired_twist_adm_.tail(3) = v_yaw_ * Eigen::Vector3d::UnitZ()
+                                   + v_pitch_ * ee_x_in_base_;
+  }
 }
 
 //!-                     CALLBACKS                       -!//

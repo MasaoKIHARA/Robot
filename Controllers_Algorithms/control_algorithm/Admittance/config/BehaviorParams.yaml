@@ -1,17 +1,17 @@
-delay_sec: 1.0  # [s]
+delay_sec: 0.0  # [s]
 
 behaviors:
   - name: knee1
     type: KneeBuckling
-    force_y: -23.1      # [N]
-    force_z: -288.3     # [N]
+    force_y: -20.9 #-23.1      # [N]
+    force_z: -230.6 #-288.3     # [N]
     duration: 0.3       # [s]
 
   - name: slide1
     type: SeatSliding
-    force_y: 9.0 #3.0       # [N] force_y: -1.5       # [N]
-    force_z: -52.0 #-17.6      # [N] force_z: -8.8       # [N]
-    torque_x: -1.35 #-0.45     # [Nm] torque_x: -0.225    # [Nm]
+    force_y: 10.0 #3.0       # [N] force_y: -1.5       # [N]
+    force_z: -58.6 #-17.6      # [N] force_z: -8.8       # [N]
+    torque_x: -1.5 #-0.45     # [Nm] torque_x: -0.225    # [Nm]
     duration: 2.175     # [s]
 
   - name: ool_stand1
@@ -22,7 +22,7 @@ behaviors:
   - name: ool_sts_back1
     type: OutOfLineStSBack
     force_y: -0.25 #-0.17      # [N]
-    force_z: 40.2 #123.0 #268.0      # [N]
+    force_z: 123.0 #268.0      # [N]
     torque_x: -2.93     # [Nm]
     duration: 0.425     # [s]
 
@@ -30,7 +30,7 @@ behaviors:
     type: OutOfLineStSSide
     force_x: -20.6 #-10.3      # [N]
     force_y: 0.0      # [N]
-    force_z: 42.8 #32.3 #214.25     # [N]
+    force_z: 107.1 #214.25     # [N]
     torque_y: 0.5       # [Nm]
     duration: 0.55      # [s]
 
