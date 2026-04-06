@@ -17,7 +17,6 @@
 #include "Eigen/Geometry"
 #include "Eigen/Dense"
 #include <eigen_conversions/eigen_msg.h>
-#include "std_msgs/Float32.h"
 #include "sensor_msgs/JointState.h"
 
 #include <memory>
@@ -56,9 +55,6 @@ protected:
   ros::Subscriber sub_arm_state_;
   ros::Subscriber sub_wrench_state_;
   ros::Subscriber sub_filtered_force_;
-  ros::Subscriber sub_waist_angle_;
-  float latest_waist_angle_;
-  void waist_angle_callback(const std_msgs::Float32ConstPtr& msg);
   // Publishers:
   ros::Publisher pub_arm_cmd_;
   ros::Publisher vac_pub_;

@@ -34,10 +34,6 @@ Admittance::Admittance(ros::NodeHandle &n,
   sub_wrench_state_        = nh_.subscribe(topic_wrench_state, 5,
       &Admittance::state_wrench_callback, this, ros::TransportHints().reliable().tcpNoDelay());
 
-  latest_waist_angle_ = 0.0f;										 
-  sub_waist_angle_ = nh_.subscribe("/waist_angle", 1, &Admittance::waist_angle_callback, this);	 
-  ROS_INFO("Subscribing to /waist_angle");
-
   //* Publishers
   pub_arm_cmd_             = nh_.advertise<geometry_msgs::Twist>(topic_arm_command, 5);
   vac_pub_                 = nh_.advertise<geometry_msgs::Point>("/var_damping", 5);
@@ -125,11 +121,6 @@ void Admittance::run() {
 }
 
 //!-                Admittance Dynamics                  -!//
-
-void Admittance::waist_angle_callback(const std_msgs::Float32ConstPtr& msg){
-  latest_waist_angle_ = msg->data;
-  ROS_DEBUG("Received waist angle: %.2f", latest_waist_angle_);
-}
 
 void Admittance::compute_admittance() {
 
@@ -288,8 +279,8 @@ void Admittance::compute_admittance() {
   }
   double alpha = dt / (tau + dt);
   contact_scale_filtered_ += alpha * (target_scale - contact_scale_filtered_);
-  // arm_desired_twist_adm_ *= contact_scale_filtered_;
-  arm_desired_twist_adm_.head(3) *= (contact_scale_filtered_ + 1.0) / 2.0;
+  arm_desired_twist_adm_ *= contact_scale_filtered_;
+  // arm_desired_twist_adm_.head(3) *= (contact_scale_filtered_ + 1.0) / 2.0;
 
   // Workspace limits enforcement
   const double x = arm_position_(0);
