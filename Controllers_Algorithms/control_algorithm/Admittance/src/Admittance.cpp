@@ -222,10 +222,10 @@ void Admittance::compute_admittance() {
   const double gain_z = 400; // [N/m^2] adjust this gain to scale the compensation effect
   auto min_z = [](double a, double b) { return (a < b ? a : b); };
   auto max_z = [](double a, double b) { return (a > b ? a : b); };
-  double vertical_force_compensation = gain_z * ((arm_position_(0) - center_x)*(arm_position_(0) - center_x)
-                                               + (arm_position_(1) - center_y)*(arm_position_(1) - center_y)
-                                               + max_z(min_z(0.0,arm_position_(2) - center_z),workspace_limits_[4])*max_z(min_z(0.0,arm_position_(2) - center_z),workspace_limits_[4]));
-  wrench_external_(2) -= vertical_force_compensation;
+  // double vertical_force_compensation = gain_z * ((arm_position_(0) - center_x)*(arm_position_(0) - center_x)
+  //                                              + (arm_position_(1) - center_y)*(arm_position_(1) - center_y)
+  //                                              + max_z(min_z(0.0,arm_position_(2) - center_z),workspace_limits_[4])*max_z(min_z(0.0,arm_position_(2) - center_z),workspace_limits_[4]));
+  // wrench_external_(2) -= vertical_force_compensation;
 
   // --- Translation 3D admittance ---
   coupling_wrench_arm.head(3) = D_.topLeftCorner(3,3) * arm_desired_twist_adm_.head(3)
@@ -278,8 +278,8 @@ void Admittance::compute_admittance() {
     target_scale = (force_norm - force_low) / (force_high - force_low);
   }
   double alpha = dt / (tau + dt);
-  contact_scale_filtered_ += alpha * (target_scale - contact_scale_filtered_);
-  arm_desired_twist_adm_ *= contact_scale_filtered_;
+  // contact_scale_filtered_ += alpha * (target_scale - contact_scale_filtered_);
+  // arm_desired_twist_adm_ *= contact_scale_filtered_;
   // arm_desired_twist_adm_.head(3) *= (contact_scale_filtered_ + 1.0) / 2.0;
 
   // Workspace limits enforcement
@@ -388,8 +388,9 @@ void Admittance::state_arm_callback(
   arm_twist_ << msg->twist.linear.x, 
                 msg->twist.linear.y,
                 msg->twist.linear.z,
-                msg->twist.angular.x,
-                msg->twist.angular.y,
+                // msg->twist.angular.x,
+                // msg->twist.angular.y,
+                0,0,
                 msg->twist.angular.z;
 }
 
@@ -401,8 +402,9 @@ void Admittance::state_wrench_callback(
     wrench_ft_frame <<  msg->wrench.force.x,
                         msg->wrench.force.y,
                         msg->wrench.force.z,
-                        msg->wrench.torque.x,
-                        msg->wrench.torque.y,
+                        // msg->wrench.torque.x,
+                        // msg->wrench.torque.y,
+                        0,0,
                         msg->wrench.torque.z;
 
     float force_thres_lower_limit_ = 6;
