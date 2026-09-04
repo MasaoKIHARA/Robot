@@ -32,6 +32,12 @@
 #include <sys/select.h>
 
 #include "Behavior/Behavior.h"
+#include "Admittance/DiagRecorder.h"
+#include "admittance_msgs/AdmittanceDiag.h"
+
+#include <kdl/chain.hpp>
+#include <kdl/chainjnttojacsolver.hpp>
+#include <kdl/jntarray.hpp>
 
 
 using namespace Eigen;
@@ -120,6 +126,46 @@ protected:
   // Contact gate (low-pass filtered)
   double contact_scale_filtered_ = 0.0;
 
+  // --- Diagnostics ---
+  ros::Publisher pub_diag_;
+  ros::Subscriber sub_joint_state_;
+  std::unique_ptr<DiagRecorder> diag_recorder_;
+  admittance_msgs::AdmittanceDiag diag_;
+
+  double diag_publish_period_ = 0.01;  // [s] 0 disables the diagnostic topic
+  double console_period_ = 0.5;        // [s] 0 disables the console summary
+  ros::Time last_diag_time_;
+  ros::Time last_console_time_;
+  ros::Time last_cycle_time_;
+  double measured_dt_ = 0.0;           // actual control loop period [s]
+
+  // Joint state mirrored from the driver, ordered along the kinematic chain
+  std::vector<std::string> chain_joint_names_;
+  std::vector<double> joint_position_;
+  std::vector<double> joint_velocity_;
+  std::vector<double> joint_effort_;
+  bool joint_state_ready_ = false;
+
+  KDL::Chain kdl_chain_;
+  std::shared_ptr<KDL::ChainJntToJacSolver> jac_solver_;
+  double sigma_min_ = 0.0;
+  double manipulability_ = 0.0;
+
+  // Which limiter fired during the current cycle
+  bool acc_clamped_ = false;
+  bool vel_clamped_ = false;
+  bool ang_vel_clamped_ = false;
+  bool slew_clamped_ = false;
+  bool workspace_clamped_ = false;
+  double acc_norm_ = 0.0;
+
+  // Operator wrench as it arrives from the sensor, before compute_admittance
+  // folds the synthetic vertical compensation into wrench_external_
+  Vector6d wrench_user_base_ = Vector6d::Zero();
+  // Behavior wrench of the current cycle, expressed in the base frame
+  Vector6d wrench_behavior_base_ = Vector6d::Zero();
+  std::string active_behavior_name_;
+
   // key interface
   std::thread key_thread_;
   std::atomic_bool key_stop_{false};
@@ -161,6 +207,12 @@ private:
   double delay_sec;
   void load_behaviors_from_param();
   void keyboardLoop();
+
+  // Diagnostics
+  void setup_diagnostics();
+  void state_joint_callback(const sensor_msgs::JointStateConstPtr msg);
+  void update_manipulability();
+  void publish_diagnostics();
 
   std::vector<ros::Timer> behavior_delayed_timers_;
 

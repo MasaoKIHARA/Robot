@@ -55,6 +55,27 @@ Before Step 6 of running the algorithm, please scale down the robot velocity on 
 
 **Be sure to hold the panel and have the Emergency Stop button available to press at all times.**
 
+## Diagnostics
+The admittance node publishes one `admittance_msgs/AdmittanceDiag` sample per
+control cycle on `/admittance_diag`, and prints a one line summary to the
+terminal twice a second. Rates, history length and output directory are set
+under `diag:` in `AdmittanceParams.yaml`.
+
+Whenever the robot leaves `NORMAL` safety mode, the seconds around the event are
+written to `~/admittance_logs/<timestamp>_<reason>.csv` (5 s before, 2 s after by
+default), so a protective stop can be inspected after the fact. Press `d` in the
+node terminal to dump the same window by hand.
+
+```bash
+rostopic echo /admittance_diag          # live values
+rosrun plotjuggler plotjuggler          # plot the CSV or the topic
+```
+
+The columns that matter most for protective stops are `err_lin` (how far the arm
+is falling behind its velocity command), `sigma_min` (distance to a singularity),
+`eff0..eff5` (joint efforts) and `fe_*` versus `fu_*` (how much of the driving
+force is synthetic rather than applied by the operator).
+
 ## Cartesian Velocity Controller
 ![control](resources/control.png)
 

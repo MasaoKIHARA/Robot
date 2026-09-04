@@ -11,10 +11,14 @@ find_package(catkin REQUIRED COMPONENTS
   cartesian_state_msgs
   roscpp
   sensor_msgs
+  geometry_msgs
   tf
   tf_conversions
   trajectory_msgs
   eigen_conversions
+  kdl_parser
+  admittance_msgs
+  ur_dashboard_msgs
 )
 set(CMAKE_CXX_FLAGS "-O2 -O3 -std=c++11 -Wall")
 ## System dependencies are found with CMake's conventions
@@ -109,7 +113,7 @@ set(CMAKE_CXX_FLAGS "-O2 -O3 -std=c++11 -Wall")
 catkin_package(
  INCLUDE_DIRS include
 #  LIBRARIES Admittance
- CATKIN_DEPENDS cartesian_state_msgs roscpp sensor_msgs tf tf_conversions trajectory_msgs
+ CATKIN_DEPENDS cartesian_state_msgs roscpp sensor_msgs geometry_msgs tf tf_conversions trajectory_msgs kdl_parser admittance_msgs ur_dashboard_msgs
 #  DEPENDS system_lib
 )
 
@@ -134,11 +138,15 @@ add_library(${PROJECT_NAME}
   src/OutOfLineStSBackBehavior.cpp
   src/OutOfLineStSSideBehavior.cpp
   src/StSBehavior.cpp
+  src/DiagRecorder.cpp
 )
 target_link_libraries(  ${PROJECT_NAME}
   ${catkin_LIBRARIES}
 
 )
+## The library uses AdmittanceDiag and SafetyMode, so the generated message
+## headers have to exist before it is compiled.
+add_dependencies(${PROJECT_NAME} ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 ## Add cmake target dependencies of the library
 ## as an example, code may need to be generated before libraries
 ## either from message generation or dynamic reconfigure

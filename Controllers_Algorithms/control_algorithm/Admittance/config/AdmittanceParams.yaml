@@ -44,3 +44,12 @@ workspcae_floor_limits: [0.34, -0.71, -0.40] # [x_edge, y_edge, z_floor]
 # normal wheelchair seat height is 460mm from ground
 # estimate the distance from seat to waist as 150mm
 # min_Z_height(from base_link) should be (460 + 150) - 793 = -183mm = -0.183m
+
+# Diagnostics (Phase 0)
+diag:
+  publish_rate: 0.0          # [Hz] rate of /admittance_diag.
+                             # 0 = one sample per control cycle (500 Hz)
+  console_rate: 2.0          # [Hz] rate of the one-line terminal summary, 0 disables it
+  buffer_sec: 5.0            # [s] history kept before a protective stop
+  post_trigger_sec: 2.0      # [s] recording kept after a protective stop
+  dump_dir: "~/admittance_logs"

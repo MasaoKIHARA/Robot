@@ -6,6 +6,11 @@
 #include "Behavior/OutOfLineStSSideBehavior.h"
 #include "Behavior/StSBehavior.h"
 
+#include <kdl_parser/kdl_parser.hpp>
+
+#include <algorithm>
+#include <cstdio>
+
 Admittance::Admittance(ros::NodeHandle &n,
     double frequency,
     std::string topic_arm_state,
@@ -80,6 +85,8 @@ Admittance::Admittance(ros::NodeHandle &n,
 
   wait_for_transformations();
 
+  setup_diagnostics();
+
   // load behaviors
   load_behaviors_from_param();
 
@@ -111,6 +118,12 @@ void Admittance::run() {
 
   while (nh_.ok()) {
 
+    const ros::Time cycle_start = ros::Time::now();
+    if (!last_cycle_time_.isZero()) {
+      measured_dt_ = (cycle_start - last_cycle_time_).toSec();
+    }
+    last_cycle_time_ = cycle_start;
+
     compute_admittance();
 
     send_commands_to_robot();
@@ -141,6 +154,8 @@ void Admittance::compute_admittance() {
   ee_x_in_base_ = arm_orientation_.toRotationMatrix().col(0);
   double e_yaw = error.tail(3).dot(Eigen::Vector3d::UnitZ());
   double e_pitch = error.tail(3).dot(ee_x_in_base_);
+  diag_.e_yaw = e_yaw;
+  diag_.e_pitch = e_pitch;
 
   // Behavor renewing and effects collection
   double dt = loop_rate_.expectedCycleTime().toSec(); // time interval
@@ -152,12 +167,18 @@ void Admittance::compute_admittance() {
   Vector6d ext_from_behaviors = Vector6d::Zero();
   bool any_behavior_active = false;
   if (wrench_external_.norm() > -10.0) {
+    active_behavior_name_.clear();
     for (auto& b : behaviors_) {
       b->update(tnow, dt);
       ext_from_behaviors += rotation_ft_base * b->externalWrench();
-      if (b->isActive()) any_behavior_active = true;
+      if (b->isActive()) {
+        any_behavior_active = true;
+        if (active_behavior_name_.empty()) active_behavior_name_ = b->name();
+        else active_behavior_name_ += "+" + b->name();
+      }
     }
   }
+  wrench_behavior_base_ = ext_from_behaviors;
   // Reset velocity when all behaviors just finished
   if (was_any_behavior_active_ && !any_behavior_active) {
     arm_desired_twist_adm_.setZero();
@@ -225,6 +246,8 @@ void Admittance::compute_admittance() {
   double vertical_force_compensation = gain_z * ((arm_position_(0) - center_x)*(arm_position_(0) - center_x)
                                                + (arm_position_(1) - center_y)*(arm_position_(1) - center_y)
                                                + max_z(min_z(0.0,arm_position_(2) - center_z),workspace_limits_[4])*max_z(min_z(0.0,arm_position_(2) - center_z),workspace_limits_[4]));
+  diag_.vertical_compensation = vertical_force_compensation;
+
   wrench_external_(2) -= vertical_force_compensation;
 
   // --- Translation 3D admittance ---
@@ -234,8 +257,10 @@ void Admittance::compute_admittance() {
       * (-coupling_wrench_arm.head(3) + wrench_external_.head(3) - ext_from_behaviors.head(3));
 
   double a_acc_norm = (arm_desired_accelaration.segment(0, 3)).norm();
+  acc_norm_ = std::max(acc_norm_, a_acc_norm);
 
   if (a_acc_norm > arm_max_acc_) {
+    acc_clamped_ = true;
     ROS_WARN_STREAM_THROTTLE(1, "Admittance generates high arm accelaration!"
                              << " norm: " << a_acc_norm);
     arm_desired_accelaration.segment(0, 3) *= (arm_max_acc_ / a_acc_norm);
@@ -306,6 +331,7 @@ void Admittance::compute_admittance() {
   auto enforce_axis = [&](int axis_idx, double pos, double lo, double hi) {
     double vel = arm_desired_twist_adm_(axis_idx);
     if (pos <= lo + margin && vel < 0) {
+      workspace_clamped_ = true;
       if (pos <= lo) {
         arm_desired_twist_adm_(axis_idx) = 0;                       // Hard Floor
       } else {
@@ -314,6 +340,7 @@ void Admittance::compute_admittance() {
       }
     }
     if (pos >= hi - margin && vel > 0) {
+      workspace_clamped_ = true;
       if (pos >= hi) {
         arm_desired_twist_adm_(axis_idx) = 0;                       // Hard Floor
       } else {
@@ -454,6 +481,7 @@ void Admittance::state_wrench_callback(
 
     get_rotation_matrix(rotation_ft_base, listener_ft_, base_link_, end_link_);
     wrench_external_ <<  rotation_ft_base * wrench_ft_frame;
+    wrench_user_base_ = wrench_external_;
 
     geometry_msgs::WrenchStamped wrench_input;
     wrench_input.wrench.force.x  = wrench_ft_frame(0);
@@ -474,12 +502,14 @@ void Admittance::send_commands_to_robot() {
   double lin_norm = (arm_desired_twist_adm_.segment(0, 3)).norm();
   // (Normalized Scaling) Velosity limitation 
   if (lin_norm > arm_max_vel_) {
+    vel_clamped_ = true;
     ROS_WARN_STREAM_THROTTLE(1, "Admittance fast linear velocity! norm: " << lin_norm);
     arm_desired_twist_adm_.segment(0, 3) *= (arm_max_vel_ / lin_norm);
   }
   // (Normalized Scaling) Angular limitation
   double ang_norm = (arm_desired_twist_adm_.segment(3, 3)).norm();
   if (ang_norm > arm_max_ang_vel_) {
+    ang_vel_clamped_ = true;
     ROS_WARN_STREAM_THROTTLE(1, "Admittance fast angular velocity! norm: " << ang_norm);
     arm_desired_twist_adm_.segment(3, 3) *= (arm_max_ang_vel_ / ang_norm);
   }
@@ -491,6 +521,7 @@ void Admittance::send_commands_to_robot() {
   Vector3d dv = v_new - v_prev;
   double max_dv = std::max(1e-6, arm_max_acc_ * dt);
   if (dv.norm() > max_dv) {
+    slew_clamped_ = true;
     dv *= (max_dv / dv.norm());
     v_new = v_prev + dv;
   }
@@ -501,6 +532,7 @@ void Admittance::send_commands_to_robot() {
   Vector3d dw = w_new - w_prev;
   double max_dw = std::max(1e-6, arm_max_ang_acc_ * dt);
   if (dw.norm() > max_dw) {
+    slew_clamped_ = true;
     dw *= (max_dw / dw.norm());
     w_new = w_prev + dw;
   }
@@ -520,6 +552,8 @@ void Admittance::send_commands_to_robot() {
 
   pub_arm_cmd_.publish(arm_twist_cmd);
   last_published_twist_ = arm_desired_twist_adm_;
+
+  publish_diagnostics();
 }
 
 //!-                    UTILIZATION                      -!//
@@ -638,7 +672,7 @@ void Admittance::keyboardLoop() {
     tcsetattr(STDIN_FILENO, TCSANOW, &raw);
   }
 
-  ROS_INFO("Keyboard: press 'k' (knee), 's' (slide), 'o' (OOL_stand), 'b' (OOL_StS_back), 'l' (OOL_StS_side), 't' (StS), 'r' (reset).");
+  ROS_INFO("Keyboard: press 'k' (knee), 's' (slide), 'o' (OOL_stand), 'b' (OOL_StS_back), 'l' (OOL_StS_side), 't' (StS), 'r' (reset), 'd' (dump diagnostic log).");
 
   while (ros::ok() && !key_stop_) {
     fd_set set;
@@ -664,10 +698,224 @@ void Admittance::keyboardLoop() {
           triggerBehavior("sts1");
         } else if (c == 'r') {
           resetAllBehaviors();
+        } else if (c == 'd') {
+          if (diag_recorder_) diag_recorder_->requestManualDump();
         }
       }
     }
   }
   // restoration
   tcsetattr(STDIN_FILENO, TCSANOW, &orig_term_);
+}
+
+//!-                    DIAGNOSTICS                      -!//
+
+void Admittance::setup_diagnostics() {
+  // publish_rate <= 0 means one diagnostic sample per control cycle.
+  double publish_rate = 0.0;
+  double console_rate = 2.0;
+  nh_.param("diag/publish_rate", publish_rate, publish_rate);
+  nh_.param("diag/console_rate", console_rate, console_rate);
+  diag_publish_period_ = (publish_rate > 0.0) ? 1.0 / publish_rate : 0.0;
+  console_period_      = (console_rate > 0.0) ? 1.0 / console_rate : 0.0;
+
+  pub_diag_ = nh_.advertise<admittance_msgs::AdmittanceDiag>("/admittance_diag", 10);
+  sub_joint_state_ = nh_.subscribe("/joint_states", 1,
+      &Admittance::state_joint_callback, this, ros::TransportHints().reliable().tcpNoDelay());
+
+  diag_recorder_.reset(new DiagRecorder(nh_));
+
+  // Build the kinematic chain so the Jacobian, and with it the distance to a
+  // singularity, can be evaluated alongside the admittance state.
+  std::string param_name, urdf_xml;
+  if (!nh_.searchParam("robot_description", param_name) ||
+      !nh_.getParam(param_name, urdf_xml) || urdf_xml.empty()) {
+    ROS_WARN("robot_description not found: manipulability will not be reported.");
+    return;
+  }
+
+  KDL::Tree tree;
+  if (!kdl_parser::treeFromString(urdf_xml, tree)) {
+    ROS_WARN("Could not parse robot_description: manipulability will not be reported.");
+    return;
+  }
+  if (!tree.getChain(base_link_, end_link_, kdl_chain_)) {
+    ROS_WARN_STREAM("No chain from " << base_link_ << " to " << end_link_
+                    << ": manipulability will not be reported.");
+    return;
+  }
+
+  for (const auto& segment : kdl_chain_.segments) {
+    if (segment.getJoint().getType() != KDL::Joint::None) {
+      chain_joint_names_.push_back(segment.getJoint().getName());
+    }
+  }
+  joint_position_.assign(chain_joint_names_.size(), 0.0);
+  joint_velocity_.assign(chain_joint_names_.size(), 0.0);
+  joint_effort_.assign(chain_joint_names_.size(), 0.0);
+
+  jac_solver_.reset(new KDL::ChainJntToJacSolver(kdl_chain_));
+  ROS_INFO_STREAM("Diagnostics: chain " << base_link_ << " -> " << end_link_
+                  << " with " << chain_joint_names_.size() << " joints.");
+}
+
+void Admittance::state_joint_callback(const sensor_msgs::JointStateConstPtr msg) {
+  if (chain_joint_names_.empty()) return;
+
+  // /joint_states is not guaranteed to be ordered like the chain, so match by name.
+  for (std::size_t i = 0; i < chain_joint_names_.size(); ++i) {
+    for (std::size_t j = 0; j < msg->name.size(); ++j) {
+      if (msg->name[j] != chain_joint_names_[i]) continue;
+      if (j < msg->position.size()) joint_position_[i] = msg->position[j];
+      if (j < msg->velocity.size()) joint_velocity_[i] = msg->velocity[j];
+      if (j < msg->effort.size())   joint_effort_[i]   = msg->effort[j];
+      break;
+    }
+  }
+  joint_state_ready_ = true;
+}
+
+void Admittance::update_manipulability() {
+  if (!jac_solver_ || !joint_state_ready_) return;
+
+  const unsigned int n = kdl_chain_.getNrOfJoints();
+  if (joint_position_.size() != n) return;
+
+  KDL::JntArray q(n);
+  for (unsigned int i = 0; i < n; ++i) q(i) = joint_position_[i];
+
+  KDL::Jacobian jac(n);
+  if (jac_solver_->JntToJac(q, jac) < 0) return;
+
+  Eigen::JacobiSVD<Eigen::MatrixXd> svd(jac.data);
+  const Eigen::VectorXd sv = svd.singularValues();
+  if (sv.size() == 0) return;
+  sigma_min_ = sv(sv.size() - 1);
+  manipulability_ = sv.prod();
+}
+
+void Admittance::publish_diagnostics() {
+  if (!diag_recorder_) return;
+
+  const ros::Time now = ros::Time::now();
+  if (diag_publish_period_ > 0.0 && !last_diag_time_.isZero() &&
+      (now - last_diag_time_).toSec() < diag_publish_period_) {
+    return;
+  }
+  last_diag_time_ = now;
+
+  update_manipulability();
+
+  diag_.header.stamp = now;
+  diag_.header.frame_id = base_link_;
+
+  diag_.wrench_user.force.x  = wrench_user_base_(0);
+  diag_.wrench_user.force.y  = wrench_user_base_(1);
+  diag_.wrench_user.force.z  = wrench_user_base_(2);
+  diag_.wrench_user.torque.x = wrench_user_base_(3);
+  diag_.wrench_user.torque.y = wrench_user_base_(4);
+  diag_.wrench_user.torque.z = wrench_user_base_(5);
+
+  diag_.wrench_effective.force.x  = wrench_external_(0);
+  diag_.wrench_effective.force.y  = wrench_external_(1);
+  diag_.wrench_effective.force.z  = wrench_external_(2);
+  diag_.wrench_effective.torque.x = wrench_external_(3);
+  diag_.wrench_effective.torque.y = wrench_external_(4);
+  diag_.wrench_effective.torque.z = wrench_external_(5);
+
+  // Sign flipped so this reads as the wrench acting on the effector.
+  diag_.wrench_behavior.force.x  = -wrench_behavior_base_(0);
+  diag_.wrench_behavior.force.y  = -wrench_behavior_base_(1);
+  diag_.wrench_behavior.force.z  = -wrench_behavior_base_(2);
+  diag_.wrench_behavior.torque.x = -wrench_behavior_base_(3);
+  diag_.wrench_behavior.torque.y = -wrench_behavior_base_(4);
+  diag_.wrench_behavior.torque.z = -wrench_behavior_base_(5);
+
+  diag_.twist_cmd.linear.x  = last_published_twist_(0);
+  diag_.twist_cmd.linear.y  = last_published_twist_(1);
+  diag_.twist_cmd.linear.z  = last_published_twist_(2);
+  diag_.twist_cmd.angular.x = last_published_twist_(3);
+  diag_.twist_cmd.angular.y = last_published_twist_(4);
+  diag_.twist_cmd.angular.z = last_published_twist_(5);
+
+  diag_.twist_meas.linear.x  = arm_twist_(0);
+  diag_.twist_meas.linear.y  = arm_twist_(1);
+  diag_.twist_meas.linear.z  = arm_twist_(2);
+  diag_.twist_meas.angular.x = arm_twist_(3);
+  diag_.twist_meas.angular.y = arm_twist_(4);
+  diag_.twist_meas.angular.z = arm_twist_(5);
+
+  // The quantity the UR protective stop ultimately reacts to.
+  const double err_lin = (last_published_twist_.head(3) - arm_twist_.head(3)).norm();
+  const double err_ang = (last_published_twist_.tail(3) - arm_twist_.tail(3)).norm();
+  diag_.tracking_error_lin = err_lin;
+  diag_.tracking_error_ang = err_ang;
+
+  diag_.position.x = arm_position_(0);
+  diag_.position.y = arm_position_(1);
+  diag_.position.z = arm_position_(2);
+
+  diag_.damping_diag.x = D_(0,0);
+  diag_.damping_diag.y = D_(1,1);
+  diag_.damping_diag.z = D_(2,2);
+
+  diag_.contact_scale = contact_scale_filtered_;
+  diag_.acc_norm = acc_norm_;
+
+  diag_.acc_clamped = acc_clamped_;
+  diag_.vel_clamped = vel_clamped_;
+  diag_.ang_vel_clamped = ang_vel_clamped_;
+  diag_.slew_clamped = slew_clamped_;
+  diag_.workspace_clamped = workspace_clamped_;
+
+  diag_.joint_position = joint_position_;
+  diag_.joint_velocity = joint_velocity_;
+  diag_.joint_effort = joint_effort_;
+  diag_.sigma_min = sigma_min_;
+  diag_.manipulability = manipulability_;
+
+  diag_.loop_dt = measured_dt_;
+  diag_.safety_mode = diag_recorder_->safetyMode();
+  diag_.active_behavior = active_behavior_name_;
+
+  pub_diag_.publish(diag_);
+  diag_recorder_->push(diag_);
+
+  acc_clamped_ = false;
+  vel_clamped_ = false;
+  ang_vel_clamped_ = false;
+  slew_clamped_ = false;
+  workspace_clamped_ = false;
+  acc_norm_ = 0.0;
+
+  if (console_period_ <= 0.0) return;
+  if (!last_console_time_.isZero() && (now - last_console_time_).toSec() < console_period_) {
+    return;
+  }
+  last_console_time_ = now;
+
+  std::string flags;
+  if (acc_clamped_)       flags += "[ACC]";
+  if (vel_clamped_)       flags += "[VEL]";
+  if (ang_vel_clamped_)   flags += "[AVEL]";
+  if (slew_clamped_)      flags += "[SLEW]";
+  if (workspace_clamped_) flags += "[WS]";
+  if (flags.empty())      flags = "-";
+
+  double effort_max = 0.0;
+  for (double e : joint_effort_) effort_max = std::max(effort_max, std::fabs(e));
+
+  char line[512];
+  std::snprintf(line, sizeof(line),
+      "f_u=(%6.1f %6.1f %6.1f)N f_b=(%6.1f %6.1f %6.1f)N | "
+      "|v_cmd|=%.3f |v_meas|=%.3f err=%.3f | D=(%3.0f %3.0f %3.0f) gate=%.2f | "
+      "sig=%.3f eff=%.1f dt=%.4f | beh=%s %s",
+      diag_.wrench_user.force.x, diag_.wrench_user.force.y, diag_.wrench_user.force.z,
+      diag_.wrench_behavior.force.x, diag_.wrench_behavior.force.y, diag_.wrench_behavior.force.z,
+      last_published_twist_.head(3).norm(), arm_twist_.head(3).norm(), err_lin,
+      D_(0,0), D_(1,1), D_(2,2), contact_scale_filtered_,
+      sigma_min_, effort_max, measured_dt_,
+      active_behavior_name_.empty() ? "-" : active_behavior_name_.c_str(),
+      flags.c_str());
+  ROS_INFO_STREAM(line);
 }
