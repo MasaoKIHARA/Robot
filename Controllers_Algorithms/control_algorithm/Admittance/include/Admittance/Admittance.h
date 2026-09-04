@@ -102,15 +102,21 @@ protected:
 
   double force_x_pre, force_y_pre, force_z_pre;
   double torque_x_pre, torque_y_pre, torque_z_pre;
-  double D_z0, A_z0, B_z0;
+  double D_z0 = 0.0, A_z0 = 0.0, B_z0 = 0.0;
 
-  double var_D_x;
-  double var_D_y;
-  double var_D_z;
+  // The variable damping terms are read at the top of a cycle but only written
+  // at the bottom of it, so the very first cycle reads these members before
+  // anything has assigned them. Left uninitialised they held whatever was on
+  // the stack; a NaN there survives the clamps below (every comparison against
+  // NaN is false) and then feeds itself back through last_acceleration_*, which
+  // locks the whole controller at NaN until it is restarted.
+  double var_D_x = 0.0;
+  double var_D_y = 0.0;
+  double var_D_z = 0.0;
 
-  double last_acceleration_x_;
-  double last_acceleration_y_;
-  double last_acceleration_z_;
+  double last_acceleration_x_ = 0.0;
+  double last_acceleration_y_ = 0.0;
+  double last_acceleration_z_ = 0.0;
 
   // Rotation admittance (1D per axis)
   double m_yaw_, d_yaw_, k_yaw_;       // yaw (base z-axis) parameters
@@ -150,6 +156,19 @@ protected:
   std::shared_ptr<KDL::ChainJntToJacSolver> jac_solver_;
   double sigma_min_ = 0.0;
   double manipulability_ = 0.0;
+
+  // --- Tracking-error compliance ---
+  bool tracking_enabled_ = true;
+  double track_filter_tau_ = 0.01;   // [s]
+  double track_pull_tau_ = 0.03;     // [s]
+  double track_err_lin_low_ = 0.025;  // [m/s]
+  double track_err_lin_high_ = 0.080; // [m/s]
+  double track_err_ang_low_ = 0.040;  // [rad/s]
+  double track_err_ang_high_ = 0.100; // [rad/s]
+  double track_err_lin_filtered_ = 0.0;
+  double track_err_ang_filtered_ = 0.0;
+  double track_gain_lin_ = 0.0;
+  double track_gain_ang_ = 0.0;
 
   // True while the robot reports a safety mode other than NORMAL. The
   // admittance integrator is held at zero for as long as this lasts.
@@ -216,6 +235,10 @@ private:
   // safeguard stop, emergency stop, violation, fault). False when the safety
   // mode is NORMAL or has not been reported at all, e.g. in simulation.
   bool safety_stop_active() const;
+
+  // Give up chasing a velocity the arm is not achieving: pull the command
+  // toward the measured twist in proportion to how far behind it has fallen.
+  void apply_tracking_compliance();
 
   // Diagnostics
   void setup_diagnostics();

@@ -25,6 +25,12 @@ geometry_msgs/Twist twist_meas
 # |v_cmd - v_meas|. This is the quantity the UR protective stop reacts to.
 float64 tracking_error_lin
 float64 tracking_error_ang
+# Low pass filtered magnitudes of the same errors, and the resulting compliance
+# gain: 0 leaves the command alone, 1 pulls it fully toward the measured twist.
+float64 tracking_error_lin_filtered
+float64 tracking_error_ang_filtered
+float64 tracking_gain_lin
+float64 tracking_gain_ang
 
 # --- Admittance internals ---------------------------------------------------
 geometry_msgs/Point position          # end effector position

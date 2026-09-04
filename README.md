@@ -77,6 +77,23 @@ is falling behind its velocity command), `sigma_min` (distance to a singularity)
 `Actual current jN`) and `fe_*` versus `fu_*` (how much of the driving
 force is synthetic rather than applied by the operator).
 
+### Tracking compliance
+When the arm falls behind its velocity command the operator is holding it back,
+and pushing the command further only builds up joint torque until the UR trips a
+`C157` collision-torque stop. The node therefore eases the command back toward
+the velocity the arm is actually reaching, ramping in between `err_lin_low` and
+`err_lin_high` (and the angular pair) under `tracking:` in
+`AdmittanceParams.yaml`. The thresholds sit above the largest error seen during
+normal manipulation, so the gain stays at 0 until the arm is genuinely stuck.
+
+`trk=<lin>/<ang>` in the console line and the `trk_g_lin` / `trk_g_ang` CSV
+columns show the ramp; `err_lin_f` / `err_ang_f` are the filtered errors driving
+it. Set `tracking/enabled` to `false` to compare against the old behaviour.
+
+While the robot is outside `NORMAL` safety mode the admittance integrator is
+held at zero, so the arm does not resume at the pre-stop velocity when the
+protective stop is released.
+
 ## Cartesian Velocity Controller
 ![control](resources/control.png)
 

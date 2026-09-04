@@ -123,7 +123,7 @@ void DiagRecorder::write_csv() {
       << "fe_x,fe_y,fe_z,te_x,te_y,te_z,vert_comp,"
       << "vcmd_x,vcmd_y,vcmd_z,wcmd_x,wcmd_y,wcmd_z,"
       << "vmeas_x,vmeas_y,vmeas_z,wmeas_x,wmeas_y,wmeas_z,"
-      << "err_lin,err_ang,"
+      << "err_lin,err_ang,err_lin_f,err_ang_f,trk_g_lin,trk_g_ang,"
       << "pos_x,pos_y,pos_z,"
       << "D_x,D_y,D_z,contact_scale,acc_norm,e_yaw,e_pitch,"
       << "acc_clamped,vel_clamped,ang_vel_clamped,slew_clamped,workspace_clamped,";
@@ -149,6 +149,8 @@ void DiagRecorder::write_csv() {
         << d.twist_meas.linear.x << "," << d.twist_meas.linear.y << "," << d.twist_meas.linear.z << ","
         << d.twist_meas.angular.x << "," << d.twist_meas.angular.y << "," << d.twist_meas.angular.z << ","
         << d.tracking_error_lin << "," << d.tracking_error_ang << ","
+        << d.tracking_error_lin_filtered << "," << d.tracking_error_ang_filtered << ","
+        << d.tracking_gain_lin << "," << d.tracking_gain_ang << ","
         << d.position.x << "," << d.position.y << "," << d.position.z << ","
         << d.damping_diag.x << "," << d.damping_diag.y << "," << d.damping_diag.z << ","
         << d.contact_scale << "," << d.acc_norm << "," << d.e_yaw << "," << d.e_pitch << ","

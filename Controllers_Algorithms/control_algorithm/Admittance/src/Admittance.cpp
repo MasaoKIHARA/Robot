@@ -9,6 +9,7 @@
 #include <kdl_parser/kdl_parser.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 Admittance::Admittance(ros::NodeHandle &n,
@@ -518,10 +519,36 @@ void Admittance::state_wrench_callback(
 //!-               COMMANDING THE ROBOT                  -!//
 
 void Admittance::send_commands_to_robot() {
+  // Never hand a non-finite twist to the IK solver: it would turn into NaN
+  // joint velocities and there is no telling what the arm does with those.
+  // Recover by dropping the whole integrator state back to standstill.
+  if (!arm_desired_twist_adm_.allFinite() || !std::isfinite(v_yaw_) ||
+      !std::isfinite(v_pitch_)) {
+    ROS_ERROR_THROTTLE(1.0, "Admittance produced a non-finite command; "
+                            "resetting the integrator to zero.");
+    arm_desired_twist_adm_.setZero();
+    last_published_twist_.setZero();
+    v_yaw_ = 0.0;
+    v_pitch_ = 0.0;
+    last_acceleration_x_ = 0.0;
+    last_acceleration_y_ = 0.0;
+    last_acceleration_z_ = 0.0;
+    track_err_lin_filtered_ = 0.0;
+    track_err_ang_filtered_ = 0.0;
+  }
+
   if (safety_stop_active()) {
     // Publish zero rather than nothing: the cartesian controller latches the
     // last twist it received, so silence would leave the old command in place.
     arm_desired_twist_adm_.setZero();
+    // The compliance logic is skipped while stopped, so clear its state instead
+    // of leaving the pre-stop values frozen in the diagnostics.
+    track_err_lin_filtered_ = 0.0;
+    track_err_ang_filtered_ = 0.0;
+    track_gain_lin_ = 0.0;
+    track_gain_ang_ = 0.0;
+  } else {
+    apply_tracking_compliance();
   }
 
   double lin_norm = (arm_desired_twist_adm_.segment(0, 3)).norm();
@@ -742,6 +769,55 @@ void Admittance::keyboardLoop() {
 
 //!-                    DIAGNOSTICS                      -!//
 
+void Admittance::apply_tracking_compliance() {
+  if (!tracking_enabled_) {
+    track_gain_lin_ = 0.0;
+    track_gain_ang_ = 0.0;
+    return;
+  }
+
+  const double dt = loop_rate_.expectedCycleTime().toSec();
+
+  // last_published_twist_ still holds the previous cycle's command, so this is
+  // the error between what we asked for and what the arm actually did.
+  const double e_lin = (last_published_twist_.head(3) - arm_twist_.head(3)).norm();
+  const double e_ang = (last_published_twist_.tail(3) - arm_twist_.tail(3)).norm();
+
+  const double alpha = dt / (track_filter_tau_ + dt);
+  track_err_lin_filtered_ += alpha * (e_lin - track_err_lin_filtered_);
+  track_err_ang_filtered_ += alpha * (e_ang - track_err_ang_filtered_);
+
+  auto ramp = [](double e, double lo, double hi) {
+    if (hi <= lo) return 0.0;
+    return std::min(1.0, std::max(0.0, (e - lo) / (hi - lo)));
+  };
+  track_gain_lin_ = ramp(track_err_lin_filtered_, track_err_lin_low_, track_err_lin_high_);
+  track_gain_ang_ = ramp(track_err_ang_filtered_, track_err_ang_low_, track_err_ang_high_);
+
+  if (track_gain_lin_ <= 0.0 && track_gain_ang_ <= 0.0) return;
+
+  // First order pull, so the back off rate is an explicit time constant rather
+  // than a per-cycle factor that compounds at the loop rate.
+  const double k = dt / std::max(1e-3, track_pull_tau_);
+
+  arm_desired_twist_adm_.head(3) +=
+      track_gain_lin_ * k * (arm_twist_.head(3) - arm_desired_twist_adm_.head(3));
+
+  // The rotation admittance only lives in the (base z, EE x) subspace, so pull
+  // those two states rather than the raw angular vector.
+  const double w_yaw_meas = arm_twist_.tail(3).dot(Eigen::Vector3d::UnitZ());
+  const double w_pitch_meas = arm_twist_.tail(3).dot(ee_x_in_base_);
+  v_yaw_ += track_gain_ang_ * k * (w_yaw_meas - v_yaw_);
+  v_pitch_ += track_gain_ang_ * k * (w_pitch_meas - v_pitch_);
+  arm_desired_twist_adm_.tail(3) = v_yaw_ * Eigen::Vector3d::UnitZ()
+                                 + v_pitch_ * ee_x_in_base_;
+
+  ROS_WARN_STREAM_THROTTLE(0.5, "Tracking compliance: the arm is behind its command"
+      << " (err_lin " << track_err_lin_filtered_ << " m/s, err_ang "
+      << track_err_ang_filtered_ << " rad/s), easing off with gain "
+      << track_gain_lin_ << "/" << track_gain_ang_);
+}
+
 bool Admittance::safety_stop_active() const {
   if (!diag_recorder_) return false;
   const uint8_t mode = diag_recorder_->safetyMode();
@@ -757,6 +833,18 @@ void Admittance::setup_diagnostics() {
   nh_.param("diag/console_rate", console_rate, console_rate);
   diag_publish_period_ = (publish_rate > 0.0) ? 1.0 / publish_rate : 0.0;
   console_period_      = (console_rate > 0.0) ? 1.0 / console_rate : 0.0;
+
+  nh_.param("tracking/enabled", tracking_enabled_, tracking_enabled_);
+  nh_.param("tracking/filter_tau", track_filter_tau_, track_filter_tau_);
+  nh_.param("tracking/pull_tau", track_pull_tau_, track_pull_tau_);
+  nh_.param("tracking/err_lin_low", track_err_lin_low_, track_err_lin_low_);
+  nh_.param("tracking/err_lin_high", track_err_lin_high_, track_err_lin_high_);
+  nh_.param("tracking/err_ang_low", track_err_ang_low_, track_err_ang_low_);
+  nh_.param("tracking/err_ang_high", track_err_ang_high_, track_err_ang_high_);
+  ROS_INFO(tracking_enabled_
+      ? "Tracking compliance enabled: easing off between %.3f and %.3f m/s of velocity error."
+      : "Tracking compliance DISABLED (%.3f, %.3f unused).",
+      track_err_lin_low_, track_err_lin_high_);
 
   pub_diag_ = nh_.advertise<admittance_msgs::AdmittanceDiag>("/admittance_diag", 10);
   sub_joint_state_ = nh_.subscribe("/joint_states", 1,
@@ -898,6 +986,11 @@ void Admittance::publish_diagnostics() {
   diag_.damping_diag.y = D_(1,1);
   diag_.damping_diag.z = D_(2,2);
 
+  diag_.tracking_error_lin_filtered = track_err_lin_filtered_;
+  diag_.tracking_error_ang_filtered = track_err_ang_filtered_;
+  diag_.tracking_gain_lin = track_gain_lin_;
+  diag_.tracking_gain_ang = track_gain_ang_;
+
   diag_.contact_scale = contact_scale_filtered_;
   diag_.acc_norm = acc_norm_;
 
@@ -948,12 +1041,13 @@ void Admittance::publish_diagnostics() {
   std::snprintf(line, sizeof(line),
       "f_u=(%6.1f %6.1f %6.1f)N f_b=(%6.1f %6.1f %6.1f)N | "
       "|v_cmd|=%.3f |v_meas|=%.3f err=%.3f | D=(%3.0f %3.0f %3.0f) gate=%.2f | "
-      "sig=%.3f eff=%.1f dt=%.4f | beh=%s %s",
+      "sig=%.3f eff=%.1f dt=%.4f | trk=%.2f/%.2f | beh=%s %s",
       diag_.wrench_user.force.x, diag_.wrench_user.force.y, diag_.wrench_user.force.z,
       diag_.wrench_behavior.force.x, diag_.wrench_behavior.force.y, diag_.wrench_behavior.force.z,
       last_published_twist_.head(3).norm(), arm_twist_.head(3).norm(), err_lin,
       D_(0,0), D_(1,1), D_(2,2), contact_scale_filtered_,
       sigma_min_, effort_max, measured_dt_,
+      track_gain_lin_, track_gain_ang_,
       active_behavior_name_.empty() ? "-" : active_behavior_name_.c_str(),
       flags.c_str());
   ROS_INFO_STREAM(line);

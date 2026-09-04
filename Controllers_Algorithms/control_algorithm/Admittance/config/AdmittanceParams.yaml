@@ -53,3 +53,19 @@ diag:
   buffer_sec: 5.0            # [s] history kept before a protective stop
   post_trigger_sec: 2.0      # [s] recording kept after a protective stop
   dump_dir: "~/admittance_logs"
+
+# Tracking-error compliance (Phase 2-A of research-log#86)
+# When the arm falls behind its velocity command the operator is winning, and
+# the UR trips a joint protective stop shortly after. Pull the command toward
+# the measured twist instead of holding it. Thresholds are set from the
+# 2026-09-04 incident log: normal manipulation and the onset of a maladaptive
+# behavior both stay below the low threshold, so this stays inactive until the
+# arm is genuinely being arrested.
+tracking:
+  enabled: true
+  filter_tau: 0.01      # [s]     low pass on the error magnitude
+  pull_tau: 0.03        # [s]     time constant of the pull toward the measurement
+  err_lin_low: 0.025    # [m/s]   below this, no action (normal operation peaks at 0.025)
+  err_lin_high: 0.080   # [m/s]   at this and above, pull at full rate
+  err_ang_low: 0.040    # [rad/s] (normal operation peaks at 0.022)
+  err_ang_high: 0.100   # [rad/s]
