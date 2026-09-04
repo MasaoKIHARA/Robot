@@ -73,7 +73,8 @@ rosrun plotjuggler plotjuggler          # plot the CSV or the topic
 
 The columns that matter most for protective stops are `err_lin` (how far the arm
 is falling behind its velocity command), `sigma_min` (distance to a singularity),
-`eff0..eff5` (joint efforts) and `fe_*` versus `fu_*` (how much of the driving
+`eff0..eff5` (joint motor currents in A, verified identical to the UR's own
+`Actual current jN`) and `fe_*` versus `fu_*` (how much of the driving
 force is synthetic rather than applied by the operator).
 
 ## Cartesian Velocity Controller
