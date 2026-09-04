@@ -151,6 +151,10 @@ protected:
   double sigma_min_ = 0.0;
   double manipulability_ = 0.0;
 
+  // True while the robot reports a safety mode other than NORMAL. The
+  // admittance integrator is held at zero for as long as this lasts.
+  bool safety_stop_held_ = false;
+
   // Which limiter fired during the current cycle
   bool acc_clamped_ = false;
   bool vel_clamped_ = false;
@@ -207,6 +211,11 @@ private:
   double delay_sec;
   void load_behaviors_from_param();
   void keyboardLoop();
+
+  // True when the robot is not obeying velocity commands (protective stop,
+  // safeguard stop, emergency stop, violation, fault). False when the safety
+  // mode is NORMAL or has not been reported at all, e.g. in simulation.
+  bool safety_stop_active() const;
 
   // Diagnostics
   void setup_diagnostics();

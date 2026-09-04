@@ -137,6 +137,25 @@ void Admittance::run() {
 
 void Admittance::compute_admittance() {
 
+  // While the robot is stopped it does not follow velocity commands, but the
+  // admittance keeps integrating the operator wrench. Left alone the command
+  // winds up to several hundred mm/s, and the arm lurches the moment the
+  // protective stop is released. Hold every integrator state at zero instead.
+  if (safety_stop_active()) {
+    if (!safety_stop_held_) {
+      ROS_WARN("Safety stop: holding the admittance integrator at zero.");
+      safety_stop_held_ = true;
+    }
+    arm_desired_twist_adm_.setZero();
+    last_published_twist_.setZero();
+    v_yaw_ = 0.0;
+    v_pitch_ = 0.0;
+    contact_scale_filtered_ = 0.0;
+  } else if (safety_stop_held_) {
+    ROS_INFO("Safety mode back to NORMAL: releasing the integrator from zero.");
+    safety_stop_held_ = false;
+  }
+
   error.topRows(3) = arm_position_ - desired_pose_position_;
   if(desired_pose_orientation_.coeffs().dot(arm_orientation_.coeffs()) < 0.0)
   {
@@ -499,6 +518,12 @@ void Admittance::state_wrench_callback(
 //!-               COMMANDING THE ROBOT                  -!//
 
 void Admittance::send_commands_to_robot() {
+  if (safety_stop_active()) {
+    // Publish zero rather than nothing: the cartesian controller latches the
+    // last twist it received, so silence would leave the old command in place.
+    arm_desired_twist_adm_.setZero();
+  }
+
   double lin_norm = (arm_desired_twist_adm_.segment(0, 3)).norm();
   // (Normalized Scaling) Velosity limitation 
   if (lin_norm > arm_max_vel_) {
@@ -552,6 +577,13 @@ void Admittance::send_commands_to_robot() {
 
   pub_arm_cmd_.publish(arm_twist_cmd);
   last_published_twist_ = arm_desired_twist_adm_;
+
+  if (safety_stop_active()) {
+    // Start the slew limiter from standstill once the stop is released.
+    last_published_twist_.setZero();
+    v_yaw_ = 0.0;
+    v_pitch_ = 0.0;
+  }
 
   publish_diagnostics();
 }
@@ -709,6 +741,13 @@ void Admittance::keyboardLoop() {
 }
 
 //!-                    DIAGNOSTICS                      -!//
+
+bool Admittance::safety_stop_active() const {
+  if (!diag_recorder_) return false;
+  const uint8_t mode = diag_recorder_->safetyMode();
+  // 0 means the driver has not reported a mode yet, e.g. in simulation.
+  return mode != 0 && mode != ur_dashboard_msgs::SafetyMode::NORMAL;
+}
 
 void Admittance::setup_diagnostics() {
   // publish_rate <= 0 means one diagnostic sample per control cycle.
