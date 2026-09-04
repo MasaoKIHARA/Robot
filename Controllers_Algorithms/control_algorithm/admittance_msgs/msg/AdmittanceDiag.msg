@@ -35,6 +35,16 @@ float64 tracking_gain_ang
 # --- Admittance internals ---------------------------------------------------
 geometry_msgs/Point position          # end effector position
 geometry_msgs/Vector3 damping_diag    # D_(0,0), D_(1,1), D_(2,2) [Ns/m]
+# Joint torque the operator's wrench produces, tau = J^T w, in the base frame.
+# The UR trips a C157 collision stop on torque its model does not predict, and
+# an operator push is unmodelled by definition, so this is what actually stops
+# the arm. tau_joint_filtered is |tau| at the budgeted joint through the same
+# 50 ms filter the UR appears to use; measured stops land near 83 Nm.
+float64[] tau_ext
+float64 tau_joint_filtered
+float64 tau_moment_arm            # d(tau_budgeted)/d(F_z) [m]
+float64 vertical_compensation_raw # before the torque budget capped it
+
 float64 contact_scale                 # low pass filtered contact gate, 0..1
 float64 acc_norm                      # peak |a| before the acceleration clamp,
                                       # since the previous sample [m/s^2]

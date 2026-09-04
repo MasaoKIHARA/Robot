@@ -69,3 +69,17 @@ tracking:
   err_lin_high: 0.080   # [m/s]   at this and above, pull at full rate
   err_ang_low: 0.040    # [rad/s] (normal operation peaks at 0.022)
   err_ang_high: 0.100   # [rad/s]
+
+# The UR's C157A1 protective stop fires on torque at the shoulder lift joint
+# that its dynamic model cannot account for, and every newton the operator
+# applies is unaccounted for by definition. Seven recorded stops span 70-138 N
+# of operator force and 0.75-1.12 m of reach but all land at 83 +/- 4 Nm of
+# 50 ms filtered |J^T w| at joint 1, so that torque is the real limit.
+torque_budget:
+  enabled: true
+  joint: 1              #        shoulder lift
+  filter_tau: 0.05      # [s]    matches the UR's own residual filter
+  limit: 83.0           # [Nm]   measured trip level, shown on the console
+  vfc_budget: 40.0      # [Nm]   share the vertical compensation may spend;
+                        #        raise it for a stronger sag at the periphery,
+                        #        set enabled:false for the old uncapped force

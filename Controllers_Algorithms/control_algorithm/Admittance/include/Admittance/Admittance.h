@@ -157,6 +157,24 @@ protected:
   double sigma_min_ = 0.0;
   double manipulability_ = 0.0;
 
+  // --- Shoulder-lift torque budget ---
+  // A C157A1 stop is the UR refusing torque at joint 1 that its own model does
+  // not predict, and every force the operator applies is unmodelled by
+  // definition. Seven recorded stops span 70 to 138 N of operator force and
+  // 0.75 to 1.12 m of reach, yet all of them land at 83 +/- 4 Nm of 50 ms
+  // filtered |J^T w| at joint 1. That torque, not force and not velocity, is
+  // the quantity that has to stay in bounds.
+  bool torque_budget_enabled_ = true;
+  int torque_budget_joint_ = 1;
+  double torque_filter_tau_ = 0.05;   // [s]  matches the UR's own residual filter
+  double torque_limit_ = 83.0;        // [Nm] measured trip level, for reporting
+  double torque_vfc_budget_ = 40.0;   // [Nm] share the vertical compensation may spend
+  Vector6d tau_ext_ = Vector6d::Zero();
+  double tau_joint_filtered_ = 0.0;
+  double vfc_moment_arm_ = 0.0;       // d(tau_j1)/d(F_z) [m]
+  double vfc_raw_ = 0.0;
+  double vfc_applied_ = 0.0;
+
   // --- Tracking-error compliance ---
   bool tracking_enabled_ = true;
   double track_filter_tau_ = 0.01;   // [s]
@@ -244,6 +262,7 @@ private:
   void setup_diagnostics();
   void state_joint_callback(const sensor_msgs::JointStateConstPtr msg);
   void update_manipulability();
+  void update_joint_torque();
   void publish_diagnostics();
 
   std::vector<ros::Timer> behavior_delayed_timers_;

@@ -157,6 +157,9 @@ void Admittance::compute_admittance() {
     safety_stop_held_ = false;
   }
 
+  update_joint_torque();
+  update_manipulability();
+
   error.topRows(3) = arm_position_ - desired_pose_position_;
   if(desired_pose_orientation_.coeffs().dot(arm_orientation_.coeffs()) < 0.0)
   {
@@ -266,6 +269,27 @@ void Admittance::compute_admittance() {
   double vertical_force_compensation = gain_z * ((arm_position_(0) - center_x)*(arm_position_(0) - center_x)
                                                + (arm_position_(1) - center_y)*(arm_position_(1) - center_y)
                                                + max_z(min_z(0.0,arm_position_(2) - center_z),workspace_limits_[4])*max_z(min_z(0.0,arm_position_(2) - center_z),workspace_limits_[4]));
+  // The compensation grows with the square of the distance from the centre,
+  // and the moment arm at joint 1 grows with that same distance, so the torque
+  // it costs the operator grows roughly with the cube of it. At the edge of the
+  // workspace it alone asks for 96 N, which at 1.12 m of reach is 107 Nm -- a
+  // C157A1 stop before the operator has done anything else. Spend at most a
+  // fixed share of the torque budget on it: unchanged near the centre, rolled
+  // off only where it would otherwise trip the arm.
+  vfc_raw_ = vertical_force_compensation;
+  if (torque_budget_enabled_) {
+    const double arm = std::fabs(vfc_moment_arm_);
+    if (arm > 1e-3) {
+      const double vfc_max = torque_vfc_budget_ / arm;
+      if (vertical_force_compensation > vfc_max) {
+        vertical_force_compensation = vfc_max;
+        ROS_WARN_STREAM_THROTTLE(1.0, "Vertical compensation capped at "
+            << vfc_max << " N (was " << vfc_raw_ << " N): the moment arm at joint "
+            << torque_budget_joint_ << " is " << arm << " m.");
+      }
+    }
+  }
+  vfc_applied_ = vertical_force_compensation;
   diag_.vertical_compensation = vertical_force_compensation;
 
   wrench_external_(2) -= vertical_force_compensation;
@@ -846,6 +870,15 @@ void Admittance::setup_diagnostics() {
       : "Tracking compliance DISABLED (%.3f, %.3f unused).",
       track_err_lin_low_, track_err_lin_high_);
 
+  nh_.param("torque_budget/enabled", torque_budget_enabled_, torque_budget_enabled_);
+  nh_.param("torque_budget/joint", torque_budget_joint_, torque_budget_joint_);
+  nh_.param("torque_budget/filter_tau", torque_filter_tau_, torque_filter_tau_);
+  nh_.param("torque_budget/limit", torque_limit_, torque_limit_);
+  nh_.param("torque_budget/vfc_budget", torque_vfc_budget_, torque_vfc_budget_);
+  ROS_INFO_STREAM("Shoulder torque budget " << (torque_budget_enabled_ ? "on" : "off")
+      << ": joint " << torque_budget_joint_ << " trips near " << torque_limit_
+      << " Nm, vertical compensation may spend " << torque_vfc_budget_ << " Nm.");
+
   pub_diag_ = nh_.advertise<admittance_msgs::AdmittanceDiag>("/admittance_diag", 10);
   sub_joint_state_ = nh_.subscribe("/joint_states", 1,
       &Admittance::state_joint_callback, this, ros::TransportHints().reliable().tcpNoDelay());
@@ -902,6 +935,35 @@ void Admittance::state_joint_callback(const sensor_msgs::JointStateConstPtr msg)
   joint_state_ready_ = true;
 }
 
+void Admittance::update_joint_torque() {
+  if (!jac_solver_ || !joint_state_ready_) return;
+
+  const unsigned int n = kdl_chain_.getNrOfJoints();
+  if (joint_position_.size() != n || n < 2) return;
+
+  KDL::JntArray q(n);
+  for (unsigned int i = 0; i < n; ++i) q(i) = joint_position_[i];
+
+  KDL::Jacobian jac(n);
+  if (jac_solver_->JntToJac(q, jac) < 0) return;
+
+  // The joint torque the operator's push actually produces. KDL hands back the
+  // Jacobian in the base frame with its reference point at the tip, which is
+  // the frame the wrench is already in.
+  const Eigen::VectorXd tau = jac.data.transpose() * wrench_user_base_;
+  for (int i = 0; i < 6 && i < tau.size(); ++i) tau_ext_(i) = tau(i);
+
+  const int j = std::min<int>(torque_budget_joint_, static_cast<int>(n) - 1);
+  // Row 2 is the linear z row, so this column entry is the moment arm that
+  // turns a vertical force at the tip into torque at the budgeted joint.
+  vfc_moment_arm_ = jac.data(2, j);
+
+  const double dt = measured_dt_ > 0.0 ? measured_dt_
+                                       : loop_rate_.expectedCycleTime().toSec();
+  const double alpha = dt / (torque_filter_tau_ + dt);
+  tau_joint_filtered_ += alpha * (std::fabs(tau_ext_(j)) - tau_joint_filtered_);
+}
+
 void Admittance::update_manipulability() {
   if (!jac_solver_ || !joint_state_ready_) return;
 
@@ -930,8 +992,6 @@ void Admittance::publish_diagnostics() {
     return;
   }
   last_diag_time_ = now;
-
-  update_manipulability();
 
   diag_.header.stamp = now;
   diag_.header.frame_id = base_link_;
@@ -991,6 +1051,11 @@ void Admittance::publish_diagnostics() {
   diag_.tracking_gain_lin = track_gain_lin_;
   diag_.tracking_gain_ang = track_gain_ang_;
 
+  diag_.tau_ext.assign(tau_ext_.data(), tau_ext_.data() + 6);
+  diag_.tau_joint_filtered = tau_joint_filtered_;
+  diag_.tau_moment_arm = vfc_moment_arm_;
+  diag_.vertical_compensation_raw = vfc_raw_;
+
   diag_.contact_scale = contact_scale_filtered_;
   diag_.acc_norm = acc_norm_;
 
@@ -1041,11 +1106,13 @@ void Admittance::publish_diagnostics() {
   std::snprintf(line, sizeof(line),
       "f_u=(%6.1f %6.1f %6.1f)N f_b=(%6.1f %6.1f %6.1f)N | "
       "|v_cmd|=%.3f |v_meas|=%.3f err=%.3f | D=(%3.0f %3.0f %3.0f) gate=%.2f | "
+      "tau1=%5.1f/%4.0f vfc=%4.0f/%4.0f | "
       "sig=%.3f eff=%.1f dt=%.4f | trk=%.2f/%.2f | beh=%s %s",
       diag_.wrench_user.force.x, diag_.wrench_user.force.y, diag_.wrench_user.force.z,
       diag_.wrench_behavior.force.x, diag_.wrench_behavior.force.y, diag_.wrench_behavior.force.z,
       last_published_twist_.head(3).norm(), arm_twist_.head(3).norm(), err_lin,
       D_(0,0), D_(1,1), D_(2,2), contact_scale_filtered_,
+      tau_joint_filtered_, torque_limit_, vfc_applied_, vfc_raw_,
       sigma_min_, effort_max, measured_dt_,
       track_gain_lin_, track_gain_ang_,
       active_behavior_name_.empty() ? "-" : active_behavior_name_.c_str(),

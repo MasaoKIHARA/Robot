@@ -77,6 +77,27 @@ is falling behind its velocity command), `sigma_min` (distance to a singularity)
 `Actual current jN`) and `fe_*` versus `fu_*` (how much of the driving
 force is synthetic rather than applied by the operator).
 
+### Shoulder torque budget
+A `C157A1` protective stop is the UR refusing torque at the shoulder lift joint
+that its dynamic model cannot account for, and every newton the operator applies
+is unaccounted for by definition. Seven recorded stops span 70-138 N of operator
+force and 0.75-1.12 m of reach, yet all of them land at 83 +/- 4 Nm of 50 ms
+filtered `|J^T w|` at joint 1. Force alone does not predict a stop; force times
+moment arm does.
+
+The node computes that torque every cycle and shows it as `tau1=<now>/<limit>`
+on the console, so how close the arm is to a stop is visible while working. The
+`tau0..tau5`, `tau_f` and `tau_arm` CSV columns record it.
+
+The vertical force compensation is bounded by the same budget. It grows with the
+square of the distance from the workspace centre while the moment arm grows with
+that same distance, so its torque cost grows roughly with the cube of it: at the
+edge it asks for 96 N, which at 1.12 m of reach is 107 Nm of joint torque before
+the operator has done anything else. `torque_budget/vfc_budget` caps its share,
+leaving the sag near the centre untouched and rolling it off only out at the
+periphery. Raise it for a stronger peripheral sag, or set
+`torque_budget/enabled` to `false` for the old uncapped force.
+
 ### Tracking compliance
 When the arm falls behind its velocity command the operator is holding it back,
 and pushing the command further only builds up joint torque until the UR trips a
