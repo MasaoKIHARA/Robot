@@ -181,6 +181,13 @@ protected:
   // of reach is the whole torque budget. Release the sag when it is pushed back
   // against -- quickly on the way down, slowly on the way back -- so restoring
   // the posture takes a caregiver's touch rather than a shove.
+  // Where the patient is taken to be sitting. The sag is measured from here, so
+  // it has to follow the physical setup: move the chair without moving this and
+  // the simulator reads the patient as displaced from their seat and sags
+  // harder, cancelling out the shorter reach that moving it was meant to buy.
+  std::vector<double> vfc_center_{0.0263, -0.974, 0.160};
+  double vfc_gain_ = 400.0;         // [N/m^2]
+
   double vfc_yield_force_ = 80.0;   // [N] operator force that fully releases it
   double vfc_yield_tau_ = 0.05;     // [s] how fast it gives way
   double vfc_return_tau_ = 1.0;     // [s] how slowly it builds back

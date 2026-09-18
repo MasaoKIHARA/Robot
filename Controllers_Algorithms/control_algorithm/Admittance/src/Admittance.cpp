@@ -260,10 +260,10 @@ void Admittance::compute_admittance() {
   vac_pub_.publish(vac_msg);
 
   // Vertical Force Compensation
-  const double center_x = 0.0263;
-  const double center_y = -0.974;
-  const double center_z = 0.160;
-  const double gain_z = 400; // [N/m^2] adjust this gain to scale the compensation effect
+  const double center_x = vfc_center_[0];
+  const double center_y = vfc_center_[1];
+  const double center_z = vfc_center_[2];
+  const double gain_z = vfc_gain_;
   auto min_z = [](double a, double b) { return (a < b ? a : b); };
   auto max_z = [](double a, double b) { return (a > b ? a : b); };
   double vertical_force_compensation = gain_z * ((arm_position_(0) - center_x)*(arm_position_(0) - center_x)
@@ -886,6 +886,19 @@ void Admittance::setup_diagnostics() {
   nh_.param("torque_budget/filter_tau", torque_filter_tau_, torque_filter_tau_);
   nh_.param("torque_budget/limit", torque_limit_, torque_limit_);
   nh_.param("torque_budget/vfc_budget", torque_vfc_budget_, torque_vfc_budget_);
+  std::vector<double> center;
+  if (nh_.getParam("vfc_center", center)) {
+    if (center.size() == 3) {
+      vfc_center_ = center;
+    } else {
+      ROS_ERROR("vfc_center needs three values; keeping the built-in seat position.");
+    }
+  }
+  nh_.param("vfc_gain", vfc_gain_, vfc_gain_);
+  ROS_INFO("Sag measured from the seat at (%.4f, %.4f, %.4f) with gain %.0f N/m^2. "
+           "Move this with the chair.",
+           vfc_center_[0], vfc_center_[1], vfc_center_[2], vfc_gain_);
+
   nh_.param("torque_budget/vfc_yield_force", vfc_yield_force_, vfc_yield_force_);
   nh_.param("torque_budget/vfc_yield_tau", vfc_yield_tau_, vfc_yield_tau_);
   nh_.param("torque_budget/vfc_return_tau", vfc_return_tau_, vfc_return_tau_);

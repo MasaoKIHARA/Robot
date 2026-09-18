@@ -75,6 +75,15 @@ tracking:
 # applies is unaccounted for by definition. Seven recorded stops span 70-138 N
 # of operator force and 0.75-1.12 m of reach but all land at 83 +/- 4 Nm of
 # 50 ms filtered |J^T w| at joint 1, so that torque is the real limit.
+# Where the patient is taken to be sitting, in base_link. The vertical sag is
+# measured from here and grows with the square of the distance from it, so this
+# has to be moved whenever the chair is moved: leave it behind and the simulator
+# reads the patient as displaced from their seat and sags harder, cancelling the
+# shorter reach that moving the chair was meant to buy. Moving the chair 0.2 m
+# closer without this would take the raw sag from 121 N to 171 N.
+vfc_center: [0.0263, -0.974, 0.160]   # [x, y, z] in m
+vfc_gain: 400.0                       # [N/m^2]
+
 torque_budget:
   enabled: true
   joint: 1              #        shoulder lift

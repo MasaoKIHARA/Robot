@@ -109,6 +109,20 @@ as before; replaying that stop, the peak torque falls from 82 to 54 Nm with the
 unopposed sag unchanged. `vfc_yield` in the CSV and `y=` on the console show how
 much of it is currently released; set `vfc_yield_force` to 0 to turn it off.
 
+### Moving the chair
+The sag is measured from `vfc_center`, the seat position in `base_link`, and
+grows with the square of the distance from it. **Move that parameter whenever
+the chair moves.** Left behind, the simulator reads the patient as displaced
+from their seat and sags harder: moving the chair 0.2 m closer without it takes
+the raw sag from 121 N to 171 N, cancelling the shorter reach that moving it was
+meant to buy. The node prints the seat it is using at startup.
+
+Reach is worth moving for, because joint 1 torque is force times moment arm and
+the arm is essentially the horizontal distance from the base. Working at
+y = -0.85 puts it at 1.0 m, where the measured stops happen; y = -0.65 brings it
+to 0.84 m and scales the same motion down to about 60 Nm. `workspace_limits`
+allows y up to -0.60.
+
 ### Tracking compliance
 When the arm falls behind its velocity command the operator is holding it back,
 and pushing the command further only builds up joint torque until the UR trips a
