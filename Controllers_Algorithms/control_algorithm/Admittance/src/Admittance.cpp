@@ -277,6 +277,17 @@ void Admittance::compute_admittance() {
   // fixed share of the torque budget on it: unchanged near the centre, rolled
   // off only where it would otherwise trip the arm.
   vfc_raw_ = vertical_force_compensation;
+
+  if (vfc_yield_force_ > 0.0) {
+    // Only a push that opposes the sag counts, and it is the raw sensor value
+    // that matters here, before the compensation itself is folded in.
+    const double oppose = std::max(0.0, wrench_user_base_(2));
+    const double target = std::max(0.0, 1.0 - oppose / vfc_yield_force_);
+    const double tau = target < vfc_yield_ ? vfc_yield_tau_ : vfc_return_tau_;
+    vfc_yield_ += (dt / (tau + dt)) * (target - vfc_yield_);
+    vertical_force_compensation *= vfc_yield_;
+  }
+
   if (torque_budget_enabled_) {
     const double arm = std::fabs(vfc_moment_arm_);
     if (arm > 1e-3) {
@@ -875,6 +886,9 @@ void Admittance::setup_diagnostics() {
   nh_.param("torque_budget/filter_tau", torque_filter_tau_, torque_filter_tau_);
   nh_.param("torque_budget/limit", torque_limit_, torque_limit_);
   nh_.param("torque_budget/vfc_budget", torque_vfc_budget_, torque_vfc_budget_);
+  nh_.param("torque_budget/vfc_yield_force", vfc_yield_force_, vfc_yield_force_);
+  nh_.param("torque_budget/vfc_yield_tau", vfc_yield_tau_, vfc_yield_tau_);
+  nh_.param("torque_budget/vfc_return_tau", vfc_return_tau_, vfc_return_tau_);
   ROS_INFO_STREAM("Shoulder torque budget " << (torque_budget_enabled_ ? "on" : "off")
       << ": joint " << torque_budget_joint_ << " trips near " << torque_limit_
       << " Nm, vertical compensation may spend " << torque_vfc_budget_ << " Nm.");
@@ -885,23 +899,28 @@ void Admittance::setup_diagnostics() {
 
   diag_recorder_.reset(new DiagRecorder(nh_));
 
-  // Build the kinematic chain so the Jacobian, and with it the distance to a
-  // singularity, can be evaluated alongside the admittance state.
+  // Build the kinematic chain. The Jacobian it gives is not only reported --
+  // the shoulder torque budget is computed from it, so without a chain that
+  // protection is gone and the node is back to the behaviour that tripped the
+  // arm. Say so loudly rather than quietly carrying on.
   std::string param_name, urdf_xml;
   if (!nh_.searchParam("robot_description", param_name) ||
       !nh_.getParam(param_name, urdf_xml) || urdf_xml.empty()) {
-    ROS_WARN("robot_description not found: manipulability will not be reported.");
+    ROS_ERROR("robot_description not found: no Jacobian, so the shoulder torque "
+              "budget and manipulability are both disabled.");
     return;
   }
 
   KDL::Tree tree;
   if (!kdl_parser::treeFromString(urdf_xml, tree)) {
-    ROS_WARN("Could not parse robot_description: manipulability will not be reported.");
+    ROS_ERROR("Could not parse robot_description: no Jacobian, so the shoulder "
+              "torque budget and manipulability are both disabled.");
     return;
   }
   if (!tree.getChain(base_link_, end_link_, kdl_chain_)) {
-    ROS_WARN_STREAM("No chain from " << base_link_ << " to " << end_link_
-                    << ": manipulability will not be reported.");
+    ROS_ERROR_STREAM("No chain from " << base_link_ << " to " << end_link_
+                     << ": no Jacobian, so the shoulder torque budget and "
+                        "manipulability are both disabled.");
     return;
   }
 
@@ -1055,6 +1074,7 @@ void Admittance::publish_diagnostics() {
   diag_.tau_joint_filtered = tau_joint_filtered_;
   diag_.tau_moment_arm = vfc_moment_arm_;
   diag_.vertical_compensation_raw = vfc_raw_;
+  diag_.vertical_compensation_yield = vfc_yield_;
 
   diag_.contact_scale = contact_scale_filtered_;
   diag_.acc_norm = acc_norm_;
@@ -1106,13 +1126,13 @@ void Admittance::publish_diagnostics() {
   std::snprintf(line, sizeof(line),
       "f_u=(%6.1f %6.1f %6.1f)N f_b=(%6.1f %6.1f %6.1f)N | "
       "|v_cmd|=%.3f |v_meas|=%.3f err=%.3f | D=(%3.0f %3.0f %3.0f) gate=%.2f | "
-      "tau1=%5.1f/%4.0f vfc=%4.0f/%4.0f | "
+      "tau1=%5.1f/%4.0f vfc=%4.0f/%4.0f y=%.2f | "
       "sig=%.3f eff=%.1f dt=%.4f | trk=%.2f/%.2f | beh=%s %s",
       diag_.wrench_user.force.x, diag_.wrench_user.force.y, diag_.wrench_user.force.z,
       diag_.wrench_behavior.force.x, diag_.wrench_behavior.force.y, diag_.wrench_behavior.force.z,
       last_published_twist_.head(3).norm(), arm_twist_.head(3).norm(), err_lin,
       D_(0,0), D_(1,1), D_(2,2), contact_scale_filtered_,
-      tau_joint_filtered_, torque_limit_, vfc_applied_, vfc_raw_,
+      tau_joint_filtered_, torque_limit_, vfc_applied_, vfc_raw_, vfc_yield_,
       sigma_min_, effort_max, measured_dt_,
       track_gain_lin_, track_gain_ang_,
       active_behavior_name_.empty() ? "-" : active_behavior_name_.c_str(),

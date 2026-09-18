@@ -175,6 +175,17 @@ protected:
   double vfc_raw_ = 0.0;
   double vfc_applied_ = 0.0;
 
+  // The sag is ours, not the patient's: nothing damps it but the operator. In
+  // the 2026-09-18 stop the effector sank at 0.12 m/s with the operator not
+  // touching it, and arresting that 40 N sink took an 81 N push, which at 1.0 m
+  // of reach is the whole torque budget. Release the sag when it is pushed back
+  // against -- quickly on the way down, slowly on the way back -- so restoring
+  // the posture takes a caregiver's touch rather than a shove.
+  double vfc_yield_force_ = 80.0;   // [N] operator force that fully releases it
+  double vfc_yield_tau_ = 0.05;     // [s] how fast it gives way
+  double vfc_return_tau_ = 1.0;     // [s] how slowly it builds back
+  double vfc_yield_ = 1.0;
+
   // --- Tracking-error compliance ---
   bool tracking_enabled_ = true;
   double track_filter_tau_ = 0.01;   // [s]

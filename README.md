@@ -98,6 +98,17 @@ leaving the sag near the centre untouched and rolling it off only out at the
 periphery. Raise it for a stronger peripheral sag, or set
 `torque_budget/enabled` to `false` for the old uncapped force.
 
+That cap alone is not enough, because the sag has no damping of its own: the
+only thing that stops it is the operator's real force, and real force is what
+trips the arm. On 2026-09-18 the effector sank at 0.12 m/s untouched, and
+arresting it took an 81 N push -- 40 Nm of sag plus 40 Nm of the operator
+fighting it, which is the whole budget. So the sag now yields to being pushed
+back, over `vfc_yield_force` newtons, fast on the way down and slow on the way
+back so it cannot chatter. While nobody resists it the sag is exactly as strong
+as before; replaying that stop, the peak torque falls from 82 to 54 Nm with the
+unopposed sag unchanged. `vfc_yield` in the CSV and `y=` on the console show how
+much of it is currently released; set `vfc_yield_force` to 0 to turn it off.
+
 ### Tracking compliance
 When the arm falls behind its velocity command the operator is holding it back,
 and pushing the command further only builds up joint torque until the UR trips a

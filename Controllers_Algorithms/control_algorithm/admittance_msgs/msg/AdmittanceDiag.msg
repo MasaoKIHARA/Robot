@@ -44,6 +44,7 @@ float64[] tau_ext
 float64 tau_joint_filtered
 float64 tau_moment_arm            # d(tau_budgeted)/d(F_z) [m]
 float64 vertical_compensation_raw # before the torque budget capped it
+float64 vertical_compensation_yield # 1 = full sag, 0 = fully released
 
 float64 contact_scale                 # low pass filtered contact gate, 0..1
 float64 acc_norm                      # peak |a| before the acceleration clamp,

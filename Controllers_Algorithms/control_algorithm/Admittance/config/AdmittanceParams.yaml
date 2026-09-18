@@ -80,6 +80,19 @@ torque_budget:
   joint: 1              #        shoulder lift
   filter_tau: 0.05      # [s]    matches the UR's own residual filter
   limit: 83.0           # [Nm]   measured trip level, shown on the console
-  vfc_budget: 40.0      # [Nm]   share the vertical compensation may spend;
-                        #        raise it for a stronger sag at the periphery,
-                        #        set enabled:false for the old uncapped force
+  vfc_budget: 40.0      # [Nm]   share the vertical compensation may spend out
+                        #        at the periphery, where it would otherwise ask
+                        #        for 96 N. Yielding, not this cap, is what keeps
+                        #        the 2026-09-18 kind of stop away, so this stays
+                        #        generous and the sag keeps its full strength
+                        #        while nobody is resisting it.
+  vfc_yield_force: 80.0 # [N]    operator push that fully releases the sag. The
+                        #        sag has no damping of its own, so without this
+                        #        the only thing that stops it is the operator's
+                        #        real force: on 2026-09-18 arresting a 40 N sink
+                        #        took 81 N, which at 1.0 m of reach is the whole
+                        #        torque budget. Replaying that stop, this brings
+                        #        the peak from 82 Nm to 54 Nm with the unopposed
+                        #        sag unchanged. 0 disables yielding.
+  vfc_yield_tau: 0.05   # [s]    how fast the sag gives way
+  vfc_return_tau: 1.0   # [s]    how slowly it builds back, so it cannot chatter
