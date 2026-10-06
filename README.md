@@ -55,6 +55,91 @@ Before Step 6 of running the algorithm, please scale down the robot velocity on 
 
 **Be sure to hold the panel and have the Emergency Stop button available to press at all times.**
 
+## Diagnostics
+The admittance node publishes one `admittance_msgs/AdmittanceDiag` sample per
+control cycle on `/admittance_diag`, and prints a one line summary to the
+terminal twice a second. Rates, history length and output directory are set
+under `diag:` in `AdmittanceParams.yaml`.
+
+Whenever the robot leaves `NORMAL` safety mode, the seconds around the event are
+written to `~/admittance_logs/<timestamp>_<reason>.csv` (5 s before, 2 s after by
+default), so a protective stop can be inspected after the fact. Press `d` in the
+node terminal to dump the same window by hand.
+
+```bash
+rostopic echo /admittance_diag          # live values
+rosrun plotjuggler plotjuggler          # plot the CSV or the topic
+```
+
+The columns that matter most for protective stops are `err_lin` (how far the arm
+is falling behind its velocity command), `sigma_min` (distance to a singularity),
+`eff0..eff5` (joint motor currents in A, verified identical to the UR's own
+`Actual current jN`) and `fe_*` versus `fu_*` (how much of the driving
+force is synthetic rather than applied by the operator).
+
+### Shoulder torque budget
+A `C157A1` protective stop is the UR refusing torque at the shoulder lift joint
+that its dynamic model cannot account for, and every newton the operator applies
+is unaccounted for by definition. Seven recorded stops span 70-138 N of operator
+force and 0.75-1.12 m of reach, yet all of them land at 83 +/- 4 Nm of 50 ms
+filtered `|J^T w|` at joint 1. Force alone does not predict a stop; force times
+moment arm does.
+
+The node computes that torque every cycle and shows it as `tau1=<now>/<limit>`
+on the console, so how close the arm is to a stop is visible while working. The
+`tau0..tau5`, `tau_f` and `tau_arm` CSV columns record it.
+
+The vertical force compensation is bounded by the same budget. It grows with the
+square of the distance from the workspace centre while the moment arm grows with
+that same distance, so its torque cost grows roughly with the cube of it: at the
+edge it asks for 96 N, which at 1.12 m of reach is 107 Nm of joint torque before
+the operator has done anything else. `torque_budget/vfc_budget` caps its share,
+leaving the sag near the centre untouched and rolling it off only out at the
+periphery. Raise it for a stronger peripheral sag, or set
+`torque_budget/enabled` to `false` for the old uncapped force.
+
+That cap alone is not enough, because the sag has no damping of its own: the
+only thing that stops it is the operator's real force, and real force is what
+trips the arm. On 2026-09-18 the effector sank at 0.12 m/s untouched, and
+arresting it took an 81 N push -- 40 Nm of sag plus 40 Nm of the operator
+fighting it, which is the whole budget. So the sag now yields to being pushed
+back, over `vfc_yield_force` newtons, fast on the way down and slow on the way
+back so it cannot chatter. While nobody resists it the sag is exactly as strong
+as before; replaying that stop, the peak torque falls from 82 to 54 Nm with the
+unopposed sag unchanged. `vfc_yield` in the CSV and `y=` on the console show how
+much of it is currently released; set `vfc_yield_force` to 0 to turn it off.
+
+### Moving the chair
+The sag is measured from `vfc_center`, the seat position in `base_link`, and
+grows with the square of the distance from it. **Move that parameter whenever
+the chair moves.** Left behind, the simulator reads the patient as displaced
+from their seat and sags harder: moving the chair 0.2 m closer without it takes
+the raw sag from 121 N to 171 N, cancelling the shorter reach that moving it was
+meant to buy. The node prints the seat it is using at startup.
+
+Reach is worth moving for, because joint 1 torque is force times moment arm and
+the arm is essentially the horizontal distance from the base. Working at
+y = -0.85 puts it at 1.0 m, where the measured stops happen; y = -0.65 brings it
+to 0.84 m and scales the same motion down to about 60 Nm. `workspace_limits`
+allows y up to -0.60.
+
+### Tracking compliance
+When the arm falls behind its velocity command the operator is holding it back,
+and pushing the command further only builds up joint torque until the UR trips a
+`C157` collision-torque stop. The node therefore eases the command back toward
+the velocity the arm is actually reaching, ramping in between `err_lin_low` and
+`err_lin_high` (and the angular pair) under `tracking:` in
+`AdmittanceParams.yaml`. The thresholds sit above the largest error seen during
+normal manipulation, so the gain stays at 0 until the arm is genuinely stuck.
+
+`trk=<lin>/<ang>` in the console line and the `trk_g_lin` / `trk_g_ang` CSV
+columns show the ramp; `err_lin_f` / `err_ang_f` are the filtered errors driving
+it. Set `tracking/enabled` to `false` to compare against the old behaviour.
+
+While the robot is outside `NORMAL` safety mode the admittance integrator is
+held at zero, so the arm does not resume at the pre-stop velocity when the
+protective stop is released.
+
 ## Cartesian Velocity Controller
 ![control](resources/control.png)
 

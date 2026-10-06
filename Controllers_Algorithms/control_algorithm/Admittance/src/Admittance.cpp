@@ -6,6 +6,12 @@
 #include "Behavior/OutOfLineStSSideBehavior.h"
 #include "Behavior/StSBehavior.h"
 
+#include <kdl_parser/kdl_parser.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+
 Admittance::Admittance(ros::NodeHandle &n,
     double frequency,
     std::string topic_arm_state,
@@ -80,6 +86,8 @@ Admittance::Admittance(ros::NodeHandle &n,
 
   wait_for_transformations();
 
+  setup_diagnostics();
+
   // load behaviors
   load_behaviors_from_param();
 
@@ -111,6 +119,12 @@ void Admittance::run() {
 
   while (nh_.ok()) {
 
+    const ros::Time cycle_start = ros::Time::now();
+    if (!last_cycle_time_.isZero()) {
+      measured_dt_ = (cycle_start - last_cycle_time_).toSec();
+    }
+    last_cycle_time_ = cycle_start;
+
     compute_admittance();
 
     send_commands_to_robot();
@@ -123,6 +137,28 @@ void Admittance::run() {
 //!-                Admittance Dynamics                  -!//
 
 void Admittance::compute_admittance() {
+
+  // While the robot is stopped it does not follow velocity commands, but the
+  // admittance keeps integrating the operator wrench. Left alone the command
+  // winds up to several hundred mm/s, and the arm lurches the moment the
+  // protective stop is released. Hold every integrator state at zero instead.
+  if (safety_stop_active()) {
+    if (!safety_stop_held_) {
+      ROS_WARN("Safety stop: holding the admittance integrator at zero.");
+      safety_stop_held_ = true;
+    }
+    arm_desired_twist_adm_.setZero();
+    last_published_twist_.setZero();
+    v_yaw_ = 0.0;
+    v_pitch_ = 0.0;
+    contact_scale_filtered_ = 0.0;
+  } else if (safety_stop_held_) {
+    ROS_INFO("Safety mode back to NORMAL: releasing the integrator from zero.");
+    safety_stop_held_ = false;
+  }
+
+  update_joint_torque();
+  update_manipulability();
 
   error.topRows(3) = arm_position_ - desired_pose_position_;
   if(desired_pose_orientation_.coeffs().dot(arm_orientation_.coeffs()) < 0.0)
@@ -141,6 +177,8 @@ void Admittance::compute_admittance() {
   ee_x_in_base_ = arm_orientation_.toRotationMatrix().col(0);
   double e_yaw = error.tail(3).dot(Eigen::Vector3d::UnitZ());
   double e_pitch = error.tail(3).dot(ee_x_in_base_);
+  diag_.e_yaw = e_yaw;
+  diag_.e_pitch = e_pitch;
 
   // Behavor renewing and effects collection
   double dt = loop_rate_.expectedCycleTime().toSec(); // time interval
@@ -152,12 +190,18 @@ void Admittance::compute_admittance() {
   Vector6d ext_from_behaviors = Vector6d::Zero();
   bool any_behavior_active = false;
   if (wrench_external_.norm() > -10.0) {
+    active_behavior_name_.clear();
     for (auto& b : behaviors_) {
       b->update(tnow, dt);
       ext_from_behaviors += rotation_ft_base * b->externalWrench();
-      if (b->isActive()) any_behavior_active = true;
+      if (b->isActive()) {
+        any_behavior_active = true;
+        if (active_behavior_name_.empty()) active_behavior_name_ = b->name();
+        else active_behavior_name_ += "+" + b->name();
+      }
     }
   }
+  wrench_behavior_base_ = ext_from_behaviors;
   // Reset velocity when all behaviors just finished
   if (was_any_behavior_active_ && !any_behavior_active) {
     arm_desired_twist_adm_.setZero();
@@ -216,15 +260,49 @@ void Admittance::compute_admittance() {
   vac_pub_.publish(vac_msg);
 
   // Vertical Force Compensation
-  const double center_x = 0.0263;
-  const double center_y = -0.974;
-  const double center_z = 0.160;
-  const double gain_z = 400; // [N/m^2] adjust this gain to scale the compensation effect
+  const double center_x = vfc_center_[0];
+  const double center_y = vfc_center_[1];
+  const double center_z = vfc_center_[2];
+  const double gain_z = vfc_gain_;
   auto min_z = [](double a, double b) { return (a < b ? a : b); };
   auto max_z = [](double a, double b) { return (a > b ? a : b); };
   double vertical_force_compensation = gain_z * ((arm_position_(0) - center_x)*(arm_position_(0) - center_x)
                                                + (arm_position_(1) - center_y)*(arm_position_(1) - center_y)
                                                + max_z(min_z(0.0,arm_position_(2) - center_z),workspace_limits_[4])*max_z(min_z(0.0,arm_position_(2) - center_z),workspace_limits_[4]));
+  // The compensation grows with the square of the distance from the centre,
+  // and the moment arm at joint 1 grows with that same distance, so the torque
+  // it costs the operator grows roughly with the cube of it. At the edge of the
+  // workspace it alone asks for 96 N, which at 1.12 m of reach is 107 Nm -- a
+  // C157A1 stop before the operator has done anything else. Spend at most a
+  // fixed share of the torque budget on it: unchanged near the centre, rolled
+  // off only where it would otherwise trip the arm.
+  vfc_raw_ = vertical_force_compensation;
+
+  if (vfc_yield_force_ > 0.0) {
+    // Only a push that opposes the sag counts, and it is the raw sensor value
+    // that matters here, before the compensation itself is folded in.
+    const double oppose = std::max(0.0, wrench_user_base_(2));
+    const double target = std::max(0.0, 1.0 - oppose / vfc_yield_force_);
+    const double tau = target < vfc_yield_ ? vfc_yield_tau_ : vfc_return_tau_;
+    vfc_yield_ += (dt / (tau + dt)) * (target - vfc_yield_);
+    vertical_force_compensation *= vfc_yield_;
+  }
+
+  if (torque_budget_enabled_) {
+    const double arm = std::fabs(vfc_moment_arm_);
+    if (arm > 1e-3) {
+      const double vfc_max = torque_vfc_budget_ / arm;
+      if (vertical_force_compensation > vfc_max) {
+        vertical_force_compensation = vfc_max;
+        ROS_WARN_STREAM_THROTTLE(1.0, "Vertical compensation capped at "
+            << vfc_max << " N (was " << vfc_raw_ << " N): the moment arm at joint "
+            << torque_budget_joint_ << " is " << arm << " m.");
+      }
+    }
+  }
+  vfc_applied_ = vertical_force_compensation;
+  diag_.vertical_compensation = vertical_force_compensation;
+
   wrench_external_(2) -= vertical_force_compensation;
 
   // --- Translation 3D admittance ---
@@ -234,8 +312,10 @@ void Admittance::compute_admittance() {
       * (-coupling_wrench_arm.head(3) + wrench_external_.head(3) - ext_from_behaviors.head(3));
 
   double a_acc_norm = (arm_desired_accelaration.segment(0, 3)).norm();
+  acc_norm_ = std::max(acc_norm_, a_acc_norm);
 
   if (a_acc_norm > arm_max_acc_) {
+    acc_clamped_ = true;
     ROS_WARN_STREAM_THROTTLE(1, "Admittance generates high arm accelaration!"
                              << " norm: " << a_acc_norm);
     arm_desired_accelaration.segment(0, 3) *= (arm_max_acc_ / a_acc_norm);
@@ -306,6 +386,7 @@ void Admittance::compute_admittance() {
   auto enforce_axis = [&](int axis_idx, double pos, double lo, double hi) {
     double vel = arm_desired_twist_adm_(axis_idx);
     if (pos <= lo + margin && vel < 0) {
+      workspace_clamped_ = true;
       if (pos <= lo) {
         arm_desired_twist_adm_(axis_idx) = 0;                       // Hard Floor
       } else {
@@ -314,6 +395,7 @@ void Admittance::compute_admittance() {
       }
     }
     if (pos >= hi - margin && vel > 0) {
+      workspace_clamped_ = true;
       if (pos >= hi) {
         arm_desired_twist_adm_(axis_idx) = 0;                       // Hard Floor
       } else {
@@ -454,6 +536,7 @@ void Admittance::state_wrench_callback(
 
     get_rotation_matrix(rotation_ft_base, listener_ft_, base_link_, end_link_);
     wrench_external_ <<  rotation_ft_base * wrench_ft_frame;
+    wrench_user_base_ = wrench_external_;
 
     geometry_msgs::WrenchStamped wrench_input;
     wrench_input.wrench.force.x  = wrench_ft_frame(0);
@@ -471,15 +554,49 @@ void Admittance::state_wrench_callback(
 //!-               COMMANDING THE ROBOT                  -!//
 
 void Admittance::send_commands_to_robot() {
+  // Never hand a non-finite twist to the IK solver: it would turn into NaN
+  // joint velocities and there is no telling what the arm does with those.
+  // Recover by dropping the whole integrator state back to standstill.
+  if (!arm_desired_twist_adm_.allFinite() || !std::isfinite(v_yaw_) ||
+      !std::isfinite(v_pitch_)) {
+    ROS_ERROR_THROTTLE(1.0, "Admittance produced a non-finite command; "
+                            "resetting the integrator to zero.");
+    arm_desired_twist_adm_.setZero();
+    last_published_twist_.setZero();
+    v_yaw_ = 0.0;
+    v_pitch_ = 0.0;
+    last_acceleration_x_ = 0.0;
+    last_acceleration_y_ = 0.0;
+    last_acceleration_z_ = 0.0;
+    track_err_lin_filtered_ = 0.0;
+    track_err_ang_filtered_ = 0.0;
+  }
+
+  if (safety_stop_active()) {
+    // Publish zero rather than nothing: the cartesian controller latches the
+    // last twist it received, so silence would leave the old command in place.
+    arm_desired_twist_adm_.setZero();
+    // The compliance logic is skipped while stopped, so clear its state instead
+    // of leaving the pre-stop values frozen in the diagnostics.
+    track_err_lin_filtered_ = 0.0;
+    track_err_ang_filtered_ = 0.0;
+    track_gain_lin_ = 0.0;
+    track_gain_ang_ = 0.0;
+  } else {
+    apply_tracking_compliance();
+  }
+
   double lin_norm = (arm_desired_twist_adm_.segment(0, 3)).norm();
   // (Normalized Scaling) Velosity limitation 
   if (lin_norm > arm_max_vel_) {
+    vel_clamped_ = true;
     ROS_WARN_STREAM_THROTTLE(1, "Admittance fast linear velocity! norm: " << lin_norm);
     arm_desired_twist_adm_.segment(0, 3) *= (arm_max_vel_ / lin_norm);
   }
   // (Normalized Scaling) Angular limitation
   double ang_norm = (arm_desired_twist_adm_.segment(3, 3)).norm();
   if (ang_norm > arm_max_ang_vel_) {
+    ang_vel_clamped_ = true;
     ROS_WARN_STREAM_THROTTLE(1, "Admittance fast angular velocity! norm: " << ang_norm);
     arm_desired_twist_adm_.segment(3, 3) *= (arm_max_ang_vel_ / ang_norm);
   }
@@ -491,6 +608,7 @@ void Admittance::send_commands_to_robot() {
   Vector3d dv = v_new - v_prev;
   double max_dv = std::max(1e-6, arm_max_acc_ * dt);
   if (dv.norm() > max_dv) {
+    slew_clamped_ = true;
     dv *= (max_dv / dv.norm());
     v_new = v_prev + dv;
   }
@@ -501,6 +619,7 @@ void Admittance::send_commands_to_robot() {
   Vector3d dw = w_new - w_prev;
   double max_dw = std::max(1e-6, arm_max_ang_acc_ * dt);
   if (dw.norm() > max_dw) {
+    slew_clamped_ = true;
     dw *= (max_dw / dw.norm());
     w_new = w_prev + dw;
   }
@@ -520,6 +639,15 @@ void Admittance::send_commands_to_robot() {
 
   pub_arm_cmd_.publish(arm_twist_cmd);
   last_published_twist_ = arm_desired_twist_adm_;
+
+  if (safety_stop_active()) {
+    // Start the slew limiter from standstill once the stop is released.
+    last_published_twist_.setZero();
+    v_yaw_ = 0.0;
+    v_pitch_ = 0.0;
+  }
+
+  publish_diagnostics();
 }
 
 //!-                    UTILIZATION                      -!//
@@ -638,7 +766,7 @@ void Admittance::keyboardLoop() {
     tcsetattr(STDIN_FILENO, TCSANOW, &raw);
   }
 
-  ROS_INFO("Keyboard: press 'k' (knee), 's' (slide), 'o' (OOL_stand), 'b' (OOL_StS_back), 'l' (OOL_StS_side), 't' (StS), 'r' (reset).");
+  ROS_INFO("Keyboard: press 'k' (knee), 's' (slide), 'o' (OOL_stand), 'b' (OOL_StS_back), 'l' (OOL_StS_side), 't' (StS), 'r' (reset), 'd' (dump diagnostic log).");
 
   while (ros::ok() && !key_stop_) {
     fd_set set;
@@ -664,10 +792,363 @@ void Admittance::keyboardLoop() {
           triggerBehavior("sts1");
         } else if (c == 'r') {
           resetAllBehaviors();
+        } else if (c == 'd') {
+          if (diag_recorder_) diag_recorder_->requestManualDump();
         }
       }
     }
   }
   // restoration
   tcsetattr(STDIN_FILENO, TCSANOW, &orig_term_);
+}
+
+//!-                    DIAGNOSTICS                      -!//
+
+void Admittance::apply_tracking_compliance() {
+  if (!tracking_enabled_) {
+    track_gain_lin_ = 0.0;
+    track_gain_ang_ = 0.0;
+    return;
+  }
+
+  const double dt = loop_rate_.expectedCycleTime().toSec();
+
+  // last_published_twist_ still holds the previous cycle's command, so this is
+  // the error between what we asked for and what the arm actually did.
+  const double e_lin = (last_published_twist_.head(3) - arm_twist_.head(3)).norm();
+  const double e_ang = (last_published_twist_.tail(3) - arm_twist_.tail(3)).norm();
+
+  const double alpha = dt / (track_filter_tau_ + dt);
+  track_err_lin_filtered_ += alpha * (e_lin - track_err_lin_filtered_);
+  track_err_ang_filtered_ += alpha * (e_ang - track_err_ang_filtered_);
+
+  auto ramp = [](double e, double lo, double hi) {
+    if (hi <= lo) return 0.0;
+    return std::min(1.0, std::max(0.0, (e - lo) / (hi - lo)));
+  };
+  track_gain_lin_ = ramp(track_err_lin_filtered_, track_err_lin_low_, track_err_lin_high_);
+  track_gain_ang_ = ramp(track_err_ang_filtered_, track_err_ang_low_, track_err_ang_high_);
+
+  if (track_gain_lin_ <= 0.0 && track_gain_ang_ <= 0.0) return;
+
+  // First order pull, so the back off rate is an explicit time constant rather
+  // than a per-cycle factor that compounds at the loop rate.
+  const double k = dt / std::max(1e-3, track_pull_tau_);
+
+  arm_desired_twist_adm_.head(3) +=
+      track_gain_lin_ * k * (arm_twist_.head(3) - arm_desired_twist_adm_.head(3));
+
+  // The rotation admittance only lives in the (base z, EE x) subspace, so pull
+  // those two states rather than the raw angular vector.
+  const double w_yaw_meas = arm_twist_.tail(3).dot(Eigen::Vector3d::UnitZ());
+  const double w_pitch_meas = arm_twist_.tail(3).dot(ee_x_in_base_);
+  v_yaw_ += track_gain_ang_ * k * (w_yaw_meas - v_yaw_);
+  v_pitch_ += track_gain_ang_ * k * (w_pitch_meas - v_pitch_);
+  arm_desired_twist_adm_.tail(3) = v_yaw_ * Eigen::Vector3d::UnitZ()
+                                 + v_pitch_ * ee_x_in_base_;
+
+  ROS_WARN_STREAM_THROTTLE(0.5, "Tracking compliance: the arm is behind its command"
+      << " (err_lin " << track_err_lin_filtered_ << " m/s, err_ang "
+      << track_err_ang_filtered_ << " rad/s), easing off with gain "
+      << track_gain_lin_ << "/" << track_gain_ang_);
+}
+
+bool Admittance::safety_stop_active() const {
+  if (!diag_recorder_) return false;
+  const uint8_t mode = diag_recorder_->safetyMode();
+  // 0 means the driver has not reported a mode yet, e.g. in simulation.
+  return mode != 0 && mode != ur_dashboard_msgs::SafetyMode::NORMAL;
+}
+
+void Admittance::setup_diagnostics() {
+  // publish_rate <= 0 means one diagnostic sample per control cycle.
+  double publish_rate = 0.0;
+  double console_rate = 2.0;
+  nh_.param("diag/publish_rate", publish_rate, publish_rate);
+  nh_.param("diag/console_rate", console_rate, console_rate);
+  diag_publish_period_ = (publish_rate > 0.0) ? 1.0 / publish_rate : 0.0;
+  console_period_      = (console_rate > 0.0) ? 1.0 / console_rate : 0.0;
+
+  nh_.param("tracking/enabled", tracking_enabled_, tracking_enabled_);
+  nh_.param("tracking/filter_tau", track_filter_tau_, track_filter_tau_);
+  nh_.param("tracking/pull_tau", track_pull_tau_, track_pull_tau_);
+  nh_.param("tracking/err_lin_low", track_err_lin_low_, track_err_lin_low_);
+  nh_.param("tracking/err_lin_high", track_err_lin_high_, track_err_lin_high_);
+  nh_.param("tracking/err_ang_low", track_err_ang_low_, track_err_ang_low_);
+  nh_.param("tracking/err_ang_high", track_err_ang_high_, track_err_ang_high_);
+  ROS_INFO(tracking_enabled_
+      ? "Tracking compliance enabled: easing off between %.3f and %.3f m/s of velocity error."
+      : "Tracking compliance DISABLED (%.3f, %.3f unused).",
+      track_err_lin_low_, track_err_lin_high_);
+
+  nh_.param("torque_budget/enabled", torque_budget_enabled_, torque_budget_enabled_);
+  nh_.param("torque_budget/joint", torque_budget_joint_, torque_budget_joint_);
+  nh_.param("torque_budget/filter_tau", torque_filter_tau_, torque_filter_tau_);
+  nh_.param("torque_budget/limit", torque_limit_, torque_limit_);
+  nh_.param("torque_budget/vfc_budget", torque_vfc_budget_, torque_vfc_budget_);
+  std::vector<double> center;
+  if (nh_.getParam("vfc_center", center)) {
+    if (center.size() == 3) {
+      vfc_center_ = center;
+    } else {
+      ROS_ERROR("vfc_center needs three values; keeping the built-in seat position.");
+    }
+  }
+  nh_.param("vfc_gain", vfc_gain_, vfc_gain_);
+  ROS_INFO("Sag measured from the seat at (%.4f, %.4f, %.4f) with gain %.0f N/m^2. "
+           "Move this with the chair.",
+           vfc_center_[0], vfc_center_[1], vfc_center_[2], vfc_gain_);
+
+  nh_.param("torque_budget/vfc_yield_force", vfc_yield_force_, vfc_yield_force_);
+  nh_.param("torque_budget/vfc_yield_tau", vfc_yield_tau_, vfc_yield_tau_);
+  nh_.param("torque_budget/vfc_return_tau", vfc_return_tau_, vfc_return_tau_);
+  ROS_INFO_STREAM("Shoulder torque budget " << (torque_budget_enabled_ ? "on" : "off")
+      << ": joint " << torque_budget_joint_ << " trips near " << torque_limit_
+      << " Nm, vertical compensation may spend " << torque_vfc_budget_ << " Nm.");
+
+  pub_diag_ = nh_.advertise<admittance_msgs::AdmittanceDiag>("/admittance_diag", 10);
+  sub_joint_state_ = nh_.subscribe("/joint_states", 1,
+      &Admittance::state_joint_callback, this, ros::TransportHints().reliable().tcpNoDelay());
+
+  diag_recorder_.reset(new DiagRecorder(nh_));
+
+  // Build the kinematic chain. The Jacobian it gives is not only reported --
+  // the shoulder torque budget is computed from it, so without a chain that
+  // protection is gone and the node is back to the behaviour that tripped the
+  // arm. Say so loudly rather than quietly carrying on.
+  std::string param_name, urdf_xml;
+  if (!nh_.searchParam("robot_description", param_name) ||
+      !nh_.getParam(param_name, urdf_xml) || urdf_xml.empty()) {
+    ROS_ERROR("robot_description not found: no Jacobian, so the shoulder torque "
+              "budget and manipulability are both disabled.");
+    return;
+  }
+
+  KDL::Tree tree;
+  if (!kdl_parser::treeFromString(urdf_xml, tree)) {
+    ROS_ERROR("Could not parse robot_description: no Jacobian, so the shoulder "
+              "torque budget and manipulability are both disabled.");
+    return;
+  }
+  if (!tree.getChain(base_link_, end_link_, kdl_chain_)) {
+    ROS_ERROR_STREAM("No chain from " << base_link_ << " to " << end_link_
+                     << ": no Jacobian, so the shoulder torque budget and "
+                        "manipulability are both disabled.");
+    return;
+  }
+
+  for (const auto& segment : kdl_chain_.segments) {
+    if (segment.getJoint().getType() != KDL::Joint::None) {
+      chain_joint_names_.push_back(segment.getJoint().getName());
+    }
+  }
+  joint_position_.assign(chain_joint_names_.size(), 0.0);
+  joint_velocity_.assign(chain_joint_names_.size(), 0.0);
+  joint_effort_.assign(chain_joint_names_.size(), 0.0);
+
+  jac_solver_.reset(new KDL::ChainJntToJacSolver(kdl_chain_));
+  ROS_INFO_STREAM("Diagnostics: chain " << base_link_ << " -> " << end_link_
+                  << " with " << chain_joint_names_.size() << " joints.");
+}
+
+void Admittance::state_joint_callback(const sensor_msgs::JointStateConstPtr msg) {
+  if (chain_joint_names_.empty()) return;
+
+  // /joint_states is not guaranteed to be ordered like the chain, so match by name.
+  for (std::size_t i = 0; i < chain_joint_names_.size(); ++i) {
+    for (std::size_t j = 0; j < msg->name.size(); ++j) {
+      if (msg->name[j] != chain_joint_names_[i]) continue;
+      if (j < msg->position.size()) joint_position_[i] = msg->position[j];
+      if (j < msg->velocity.size()) joint_velocity_[i] = msg->velocity[j];
+      if (j < msg->effort.size())   joint_effort_[i]   = msg->effort[j];
+      break;
+    }
+  }
+  joint_state_ready_ = true;
+}
+
+void Admittance::update_joint_torque() {
+  if (!jac_solver_ || !joint_state_ready_) return;
+
+  const unsigned int n = kdl_chain_.getNrOfJoints();
+  if (joint_position_.size() != n || n < 2) return;
+
+  KDL::JntArray q(n);
+  for (unsigned int i = 0; i < n; ++i) q(i) = joint_position_[i];
+
+  KDL::Jacobian jac(n);
+  if (jac_solver_->JntToJac(q, jac) < 0) return;
+
+  // The joint torque the operator's push actually produces. KDL hands back the
+  // Jacobian in the base frame with its reference point at the tip, which is
+  // the frame the wrench is already in.
+  const Eigen::VectorXd tau = jac.data.transpose() * wrench_user_base_;
+  for (int i = 0; i < 6 && i < tau.size(); ++i) tau_ext_(i) = tau(i);
+
+  const int j = std::min<int>(torque_budget_joint_, static_cast<int>(n) - 1);
+  // Row 2 is the linear z row, so this column entry is the moment arm that
+  // turns a vertical force at the tip into torque at the budgeted joint.
+  vfc_moment_arm_ = jac.data(2, j);
+
+  const double dt = measured_dt_ > 0.0 ? measured_dt_
+                                       : loop_rate_.expectedCycleTime().toSec();
+  const double alpha = dt / (torque_filter_tau_ + dt);
+  tau_joint_filtered_ += alpha * (std::fabs(tau_ext_(j)) - tau_joint_filtered_);
+}
+
+void Admittance::update_manipulability() {
+  if (!jac_solver_ || !joint_state_ready_) return;
+
+  const unsigned int n = kdl_chain_.getNrOfJoints();
+  if (joint_position_.size() != n) return;
+
+  KDL::JntArray q(n);
+  for (unsigned int i = 0; i < n; ++i) q(i) = joint_position_[i];
+
+  KDL::Jacobian jac(n);
+  if (jac_solver_->JntToJac(q, jac) < 0) return;
+
+  Eigen::JacobiSVD<Eigen::MatrixXd> svd(jac.data);
+  const Eigen::VectorXd sv = svd.singularValues();
+  if (sv.size() == 0) return;
+  sigma_min_ = sv(sv.size() - 1);
+  manipulability_ = sv.prod();
+}
+
+void Admittance::publish_diagnostics() {
+  if (!diag_recorder_) return;
+
+  const ros::Time now = ros::Time::now();
+  if (diag_publish_period_ > 0.0 && !last_diag_time_.isZero() &&
+      (now - last_diag_time_).toSec() < diag_publish_period_) {
+    return;
+  }
+  last_diag_time_ = now;
+
+  diag_.header.stamp = now;
+  diag_.header.frame_id = base_link_;
+
+  diag_.wrench_user.force.x  = wrench_user_base_(0);
+  diag_.wrench_user.force.y  = wrench_user_base_(1);
+  diag_.wrench_user.force.z  = wrench_user_base_(2);
+  diag_.wrench_user.torque.x = wrench_user_base_(3);
+  diag_.wrench_user.torque.y = wrench_user_base_(4);
+  diag_.wrench_user.torque.z = wrench_user_base_(5);
+
+  diag_.wrench_effective.force.x  = wrench_external_(0);
+  diag_.wrench_effective.force.y  = wrench_external_(1);
+  diag_.wrench_effective.force.z  = wrench_external_(2);
+  diag_.wrench_effective.torque.x = wrench_external_(3);
+  diag_.wrench_effective.torque.y = wrench_external_(4);
+  diag_.wrench_effective.torque.z = wrench_external_(5);
+
+  // Sign flipped so this reads as the wrench acting on the effector.
+  diag_.wrench_behavior.force.x  = -wrench_behavior_base_(0);
+  diag_.wrench_behavior.force.y  = -wrench_behavior_base_(1);
+  diag_.wrench_behavior.force.z  = -wrench_behavior_base_(2);
+  diag_.wrench_behavior.torque.x = -wrench_behavior_base_(3);
+  diag_.wrench_behavior.torque.y = -wrench_behavior_base_(4);
+  diag_.wrench_behavior.torque.z = -wrench_behavior_base_(5);
+
+  diag_.twist_cmd.linear.x  = last_published_twist_(0);
+  diag_.twist_cmd.linear.y  = last_published_twist_(1);
+  diag_.twist_cmd.linear.z  = last_published_twist_(2);
+  diag_.twist_cmd.angular.x = last_published_twist_(3);
+  diag_.twist_cmd.angular.y = last_published_twist_(4);
+  diag_.twist_cmd.angular.z = last_published_twist_(5);
+
+  diag_.twist_meas.linear.x  = arm_twist_(0);
+  diag_.twist_meas.linear.y  = arm_twist_(1);
+  diag_.twist_meas.linear.z  = arm_twist_(2);
+  diag_.twist_meas.angular.x = arm_twist_(3);
+  diag_.twist_meas.angular.y = arm_twist_(4);
+  diag_.twist_meas.angular.z = arm_twist_(5);
+
+  // The quantity the UR protective stop ultimately reacts to.
+  const double err_lin = (last_published_twist_.head(3) - arm_twist_.head(3)).norm();
+  const double err_ang = (last_published_twist_.tail(3) - arm_twist_.tail(3)).norm();
+  diag_.tracking_error_lin = err_lin;
+  diag_.tracking_error_ang = err_ang;
+
+  diag_.position.x = arm_position_(0);
+  diag_.position.y = arm_position_(1);
+  diag_.position.z = arm_position_(2);
+
+  diag_.damping_diag.x = D_(0,0);
+  diag_.damping_diag.y = D_(1,1);
+  diag_.damping_diag.z = D_(2,2);
+
+  diag_.tracking_error_lin_filtered = track_err_lin_filtered_;
+  diag_.tracking_error_ang_filtered = track_err_ang_filtered_;
+  diag_.tracking_gain_lin = track_gain_lin_;
+  diag_.tracking_gain_ang = track_gain_ang_;
+
+  diag_.tau_ext.assign(tau_ext_.data(), tau_ext_.data() + 6);
+  diag_.tau_joint_filtered = tau_joint_filtered_;
+  diag_.tau_moment_arm = vfc_moment_arm_;
+  diag_.vertical_compensation_raw = vfc_raw_;
+  diag_.vertical_compensation_yield = vfc_yield_;
+
+  diag_.contact_scale = contact_scale_filtered_;
+  diag_.acc_norm = acc_norm_;
+
+  diag_.acc_clamped = acc_clamped_;
+  diag_.vel_clamped = vel_clamped_;
+  diag_.ang_vel_clamped = ang_vel_clamped_;
+  diag_.slew_clamped = slew_clamped_;
+  diag_.workspace_clamped = workspace_clamped_;
+
+  diag_.joint_position = joint_position_;
+  diag_.joint_velocity = joint_velocity_;
+  diag_.joint_effort = joint_effort_;
+  diag_.sigma_min = sigma_min_;
+  diag_.manipulability = manipulability_;
+
+  diag_.loop_dt = measured_dt_;
+  diag_.safety_mode = diag_recorder_->safetyMode();
+  diag_.active_behavior = active_behavior_name_;
+
+  pub_diag_.publish(diag_);
+  diag_recorder_->push(diag_);
+
+  acc_clamped_ = false;
+  vel_clamped_ = false;
+  ang_vel_clamped_ = false;
+  slew_clamped_ = false;
+  workspace_clamped_ = false;
+  acc_norm_ = 0.0;
+
+  if (console_period_ <= 0.0) return;
+  if (!last_console_time_.isZero() && (now - last_console_time_).toSec() < console_period_) {
+    return;
+  }
+  last_console_time_ = now;
+
+  std::string flags;
+  if (acc_clamped_)       flags += "[ACC]";
+  if (vel_clamped_)       flags += "[VEL]";
+  if (ang_vel_clamped_)   flags += "[AVEL]";
+  if (slew_clamped_)      flags += "[SLEW]";
+  if (workspace_clamped_) flags += "[WS]";
+  if (flags.empty())      flags = "-";
+
+  double effort_max = 0.0;
+  for (double e : joint_effort_) effort_max = std::max(effort_max, std::fabs(e));
+
+  char line[512];
+  std::snprintf(line, sizeof(line),
+      "f_u=(%6.1f %6.1f %6.1f)N f_b=(%6.1f %6.1f %6.1f)N | "
+      "|v_cmd|=%.3f |v_meas|=%.3f err=%.3f | D=(%3.0f %3.0f %3.0f) gate=%.2f | "
+      "tau1=%5.1f/%4.0f vfc=%4.0f/%4.0f y=%.2f | "
+      "sig=%.3f eff=%.1f dt=%.4f | trk=%.2f/%.2f | beh=%s %s",
+      diag_.wrench_user.force.x, diag_.wrench_user.force.y, diag_.wrench_user.force.z,
+      diag_.wrench_behavior.force.x, diag_.wrench_behavior.force.y, diag_.wrench_behavior.force.z,
+      last_published_twist_.head(3).norm(), arm_twist_.head(3).norm(), err_lin,
+      D_(0,0), D_(1,1), D_(2,2), contact_scale_filtered_,
+      tau_joint_filtered_, torque_limit_, vfc_applied_, vfc_raw_, vfc_yield_,
+      sigma_min_, effort_max, measured_dt_,
+      track_gain_lin_, track_gain_ang_,
+      active_behavior_name_.empty() ? "-" : active_behavior_name_.c_str(),
+      flags.c_str());
+  ROS_INFO_STREAM(line);
 }

@@ -32,6 +32,12 @@
 #include <sys/select.h>
 
 #include "Behavior/Behavior.h"
+#include "Admittance/DiagRecorder.h"
+#include "admittance_msgs/AdmittanceDiag.h"
+
+#include <kdl/chain.hpp>
+#include <kdl/chainjnttojacsolver.hpp>
+#include <kdl/jntarray.hpp>
 
 
 using namespace Eigen;
@@ -96,15 +102,21 @@ protected:
 
   double force_x_pre, force_y_pre, force_z_pre;
   double torque_x_pre, torque_y_pre, torque_z_pre;
-  double D_z0, A_z0, B_z0;
+  double D_z0 = 0.0, A_z0 = 0.0, B_z0 = 0.0;
 
-  double var_D_x;
-  double var_D_y;
-  double var_D_z;
+  // The variable damping terms are read at the top of a cycle but only written
+  // at the bottom of it, so the very first cycle reads these members before
+  // anything has assigned them. Left uninitialised they held whatever was on
+  // the stack; a NaN there survives the clamps below (every comparison against
+  // NaN is false) and then feeds itself back through last_acceleration_*, which
+  // locks the whole controller at NaN until it is restarted.
+  double var_D_x = 0.0;
+  double var_D_y = 0.0;
+  double var_D_z = 0.0;
 
-  double last_acceleration_x_;
-  double last_acceleration_y_;
-  double last_acceleration_z_;
+  double last_acceleration_x_ = 0.0;
+  double last_acceleration_y_ = 0.0;
+  double last_acceleration_z_ = 0.0;
 
   // Rotation admittance (1D per axis)
   double m_yaw_, d_yaw_, k_yaw_;       // yaw (base z-axis) parameters
@@ -119,6 +131,99 @@ protected:
 
   // Contact gate (low-pass filtered)
   double contact_scale_filtered_ = 0.0;
+
+  // --- Diagnostics ---
+  ros::Publisher pub_diag_;
+  ros::Subscriber sub_joint_state_;
+  std::unique_ptr<DiagRecorder> diag_recorder_;
+  admittance_msgs::AdmittanceDiag diag_;
+
+  double diag_publish_period_ = 0.01;  // [s] 0 disables the diagnostic topic
+  double console_period_ = 0.5;        // [s] 0 disables the console summary
+  ros::Time last_diag_time_;
+  ros::Time last_console_time_;
+  ros::Time last_cycle_time_;
+  double measured_dt_ = 0.0;           // actual control loop period [s]
+
+  // Joint state mirrored from the driver, ordered along the kinematic chain
+  std::vector<std::string> chain_joint_names_;
+  std::vector<double> joint_position_;
+  std::vector<double> joint_velocity_;
+  std::vector<double> joint_effort_;
+  bool joint_state_ready_ = false;
+
+  KDL::Chain kdl_chain_;
+  std::shared_ptr<KDL::ChainJntToJacSolver> jac_solver_;
+  double sigma_min_ = 0.0;
+  double manipulability_ = 0.0;
+
+  // --- Shoulder-lift torque budget ---
+  // A C157A1 stop is the UR refusing torque at joint 1 that its own model does
+  // not predict, and every force the operator applies is unmodelled by
+  // definition. Seven recorded stops span 70 to 138 N of operator force and
+  // 0.75 to 1.12 m of reach, yet all of them land at 83 +/- 4 Nm of 50 ms
+  // filtered |J^T w| at joint 1. That torque, not force and not velocity, is
+  // the quantity that has to stay in bounds.
+  bool torque_budget_enabled_ = true;
+  int torque_budget_joint_ = 1;
+  double torque_filter_tau_ = 0.05;   // [s]  matches the UR's own residual filter
+  double torque_limit_ = 83.0;        // [Nm] measured trip level, for reporting
+  double torque_vfc_budget_ = 40.0;   // [Nm] share the vertical compensation may spend
+  Vector6d tau_ext_ = Vector6d::Zero();
+  double tau_joint_filtered_ = 0.0;
+  double vfc_moment_arm_ = 0.0;       // d(tau_j1)/d(F_z) [m]
+  double vfc_raw_ = 0.0;
+  double vfc_applied_ = 0.0;
+
+  // The sag is ours, not the patient's: nothing damps it but the operator. In
+  // the 2026-09-18 stop the effector sank at 0.12 m/s with the operator not
+  // touching it, and arresting that 40 N sink took an 81 N push, which at 1.0 m
+  // of reach is the whole torque budget. Release the sag when it is pushed back
+  // against -- quickly on the way down, slowly on the way back -- so restoring
+  // the posture takes a caregiver's touch rather than a shove.
+  // Where the patient is taken to be sitting. The sag is measured from here, so
+  // it has to follow the physical setup: move the chair without moving this and
+  // the simulator reads the patient as displaced from their seat and sags
+  // harder, cancelling out the shorter reach that moving it was meant to buy.
+  std::vector<double> vfc_center_{0.0263, -0.974, 0.160};
+  double vfc_gain_ = 400.0;         // [N/m^2]
+
+  double vfc_yield_force_ = 80.0;   // [N] operator force that fully releases it
+  double vfc_yield_tau_ = 0.05;     // [s] how fast it gives way
+  double vfc_return_tau_ = 1.0;     // [s] how slowly it builds back
+  double vfc_yield_ = 1.0;
+
+  // --- Tracking-error compliance ---
+  bool tracking_enabled_ = true;
+  double track_filter_tau_ = 0.01;   // [s]
+  double track_pull_tau_ = 0.03;     // [s]
+  double track_err_lin_low_ = 0.025;  // [m/s]
+  double track_err_lin_high_ = 0.080; // [m/s]
+  double track_err_ang_low_ = 0.040;  // [rad/s]
+  double track_err_ang_high_ = 0.100; // [rad/s]
+  double track_err_lin_filtered_ = 0.0;
+  double track_err_ang_filtered_ = 0.0;
+  double track_gain_lin_ = 0.0;
+  double track_gain_ang_ = 0.0;
+
+  // True while the robot reports a safety mode other than NORMAL. The
+  // admittance integrator is held at zero for as long as this lasts.
+  bool safety_stop_held_ = false;
+
+  // Which limiter fired during the current cycle
+  bool acc_clamped_ = false;
+  bool vel_clamped_ = false;
+  bool ang_vel_clamped_ = false;
+  bool slew_clamped_ = false;
+  bool workspace_clamped_ = false;
+  double acc_norm_ = 0.0;
+
+  // Operator wrench as it arrives from the sensor, before compute_admittance
+  // folds the synthetic vertical compensation into wrench_external_
+  Vector6d wrench_user_base_ = Vector6d::Zero();
+  // Behavior wrench of the current cycle, expressed in the base frame
+  Vector6d wrench_behavior_base_ = Vector6d::Zero();
+  std::string active_behavior_name_;
 
   // key interface
   std::thread key_thread_;
@@ -161,6 +266,22 @@ private:
   double delay_sec;
   void load_behaviors_from_param();
   void keyboardLoop();
+
+  // True when the robot is not obeying velocity commands (protective stop,
+  // safeguard stop, emergency stop, violation, fault). False when the safety
+  // mode is NORMAL or has not been reported at all, e.g. in simulation.
+  bool safety_stop_active() const;
+
+  // Give up chasing a velocity the arm is not achieving: pull the command
+  // toward the measured twist in proportion to how far behind it has fallen.
+  void apply_tracking_compliance();
+
+  // Diagnostics
+  void setup_diagnostics();
+  void state_joint_callback(const sensor_msgs::JointStateConstPtr msg);
+  void update_manipulability();
+  void update_joint_torque();
+  void publish_diagnostics();
 
   std::vector<ros::Timer> behavior_delayed_timers_;
 

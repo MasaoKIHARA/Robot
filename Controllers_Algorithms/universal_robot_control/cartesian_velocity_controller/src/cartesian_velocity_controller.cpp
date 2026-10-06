@@ -89,7 +89,6 @@ void Cartesian_Velocity_Controller::update(const ros::Time& time, const ros::Dur
   // Forward kinematics
   fk_vel_solver_->JntToCart(this->joint_state_, End_Vel_);
   fk_pos_solver_->JntToCart(this->joint_state_.q, End_Pos_);
-  std::cout << End_Pos_(0,0) << std::endl;
   // Limit rate of publishing
   if (publish_rate_ > 0.0 && last_publish_time_
        + ros::Duration(1.0/publish_rate_) < time) {

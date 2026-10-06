@@ -44,3 +44,64 @@ workspcae_floor_limits: [0.34, -0.71, -0.40] # [x_edge, y_edge, z_floor]
 # normal wheelchair seat height is 460mm from ground
 # estimate the distance from seat to waist as 150mm
 # min_Z_height(from base_link) should be (460 + 150) - 793 = -183mm = -0.183m
+
+# Diagnostics (Phase 0)
+diag:
+  publish_rate: 0.0          # [Hz] rate of /admittance_diag.
+                             # 0 = one sample per control cycle (500 Hz)
+  console_rate: 2.0          # [Hz] rate of the one-line terminal summary, 0 disables it
+  buffer_sec: 5.0            # [s] history kept before a protective stop
+  post_trigger_sec: 2.0      # [s] recording kept after a protective stop
+  dump_dir: "~/admittance_logs"
+
+# Tracking-error compliance (Phase 2-A of research-log#86)
+# When the arm falls behind its velocity command the operator is winning, and
+# the UR trips a joint protective stop shortly after. Pull the command toward
+# the measured twist instead of holding it. Thresholds are set from the
+# 2026-09-04 incident log: normal manipulation and the onset of a maladaptive
+# behavior both stay below the low threshold, so this stays inactive until the
+# arm is genuinely being arrested.
+tracking:
+  enabled: true
+  filter_tau: 0.01      # [s]     low pass on the error magnitude
+  pull_tau: 0.03        # [s]     time constant of the pull toward the measurement
+  err_lin_low: 0.025    # [m/s]   below this, no action (normal operation peaks at 0.025)
+  err_lin_high: 0.080   # [m/s]   at this and above, pull at full rate
+  err_ang_low: 0.040    # [rad/s] (normal operation peaks at 0.022)
+  err_ang_high: 0.100   # [rad/s]
+
+# The UR's C157A1 protective stop fires on torque at the shoulder lift joint
+# that its dynamic model cannot account for, and every newton the operator
+# applies is unaccounted for by definition. Seven recorded stops span 70-138 N
+# of operator force and 0.75-1.12 m of reach but all land at 83 +/- 4 Nm of
+# 50 ms filtered |J^T w| at joint 1, so that torque is the real limit.
+# Where the patient is taken to be sitting, in base_link. The vertical sag is
+# measured from here and grows with the square of the distance from it, so this
+# has to be moved whenever the chair is moved: leave it behind and the simulator
+# reads the patient as displaced from their seat and sags harder, cancelling the
+# shorter reach that moving the chair was meant to buy. Moving the chair 0.2 m
+# closer without this would take the raw sag from 121 N to 171 N.
+vfc_center: [0.0263, -0.974, 0.160]   # [x, y, z] in m
+vfc_gain: 400.0                       # [N/m^2]
+
+torque_budget:
+  enabled: true
+  joint: 1              #        shoulder lift
+  filter_tau: 0.05      # [s]    matches the UR's own residual filter
+  limit: 83.0           # [Nm]   measured trip level, shown on the console
+  vfc_budget: 40.0      # [Nm]   share the vertical compensation may spend out
+                        #        at the periphery, where it would otherwise ask
+                        #        for 96 N. Yielding, not this cap, is what keeps
+                        #        the 2026-09-18 kind of stop away, so this stays
+                        #        generous and the sag keeps its full strength
+                        #        while nobody is resisting it.
+  vfc_yield_force: 80.0 # [N]    operator push that fully releases the sag. The
+                        #        sag has no damping of its own, so without this
+                        #        the only thing that stops it is the operator's
+                        #        real force: on 2026-09-18 arresting a 40 N sink
+                        #        took 81 N, which at 1.0 m of reach is the whole
+                        #        torque budget. Replaying that stop, this brings
+                        #        the peak from 82 Nm to 54 Nm with the unopposed
+                        #        sag unchanged. 0 disables yielding.
+  vfc_yield_tau: 0.05   # [s]    how fast the sag gives way
+  vfc_return_tau: 1.0   # [s]    how slowly it builds back, so it cannot chatter
