@@ -209,6 +209,17 @@ void Admittance::compute_admittance() {
     v_pitch_ = 0.0;
   }
   was_any_behavior_active_ = any_behavior_active;
+
+  // Hold priority a little past the end so the operator-driven limiters do not
+  // snap back onto the tail of the motion the behaviour just produced.
+  if (any_behavior_active) {
+    behavior_tail_left_ = behavior_tail_sec_;
+  } else if (behavior_tail_left_ > 0.0) {
+    behavior_tail_left_ = std::max(0.0, behavior_tail_left_ - dt);
+  }
+  behavior_priority_active_ = behavior_priority_ &&
+      (any_behavior_active || behavior_tail_left_ > 0.0);
+  const bool behavior_has_priority = behavior_priority_active_;
   // Translation error w.r.t. desired equilibrium
   Vector6d coupling_wrench_arm;
 
@@ -306,19 +317,47 @@ void Admittance::compute_admittance() {
   wrench_external_(2) -= vertical_force_compensation;
 
   // --- Translation 3D admittance ---
+  // Split the drive so the behaviour can be served first. The damping still
+  // acts on the whole velocity, so summing the two parts reproduces the single
+  // equation exactly; what changes is who gives way when the clamp binds.
+  const Eigen::Matrix3d M_inv = M_.topLeftCorner(3,3).inverse();
   coupling_wrench_arm.head(3) = D_.topLeftCorner(3,3) * arm_desired_twist_adm_.head(3)
                               + K_.topLeftCorner(3,3) * error.head(3);
-  arm_desired_accelaration.head(3) = M_.topLeftCorner(3,3).inverse()
-      * (-coupling_wrench_arm.head(3) + wrench_external_.head(3) - ext_from_behaviors.head(3));
+  Eigen::Vector3d acc_behavior = M_inv * (-ext_from_behaviors.head(3));
+  Eigen::Vector3d acc_operator = M_inv
+      * (-coupling_wrench_arm.head(3) + wrench_external_.head(3));
 
-  double a_acc_norm = (arm_desired_accelaration.segment(0, 3)).norm();
+  behavior_acc_norm_ = acc_behavior.norm();
+  double a_acc_norm = (acc_behavior + acc_operator).norm();
   acc_norm_ = std::max(acc_norm_, a_acc_norm);
 
-  if (a_acc_norm > arm_max_acc_) {
-    acc_clamped_ = true;
-    ROS_WARN_STREAM_THROTTLE(1, "Admittance generates high arm accelaration!"
-                             << " norm: " << a_acc_norm);
-    arm_desired_accelaration.segment(0, 3) *= (arm_max_acc_ / a_acc_norm);
+  if (behavior_has_priority) {
+    // The behaviour gets as much of the budget as it asks for; the operator
+    // response takes what is left rather than scaling the phenomenon down
+    // alongside itself.
+    if (behavior_acc_norm_ > behavior_max_acc_) {
+      acc_clamped_ = true;
+      ROS_WARN_STREAM_THROTTLE(1, "Behaviour alone asks for "
+          << behavior_acc_norm_ << " m/s^2, above its " << behavior_max_acc_
+          << " budget; its motion will come out smaller than its parameters.");
+      acc_behavior *= (behavior_max_acc_ / behavior_acc_norm_);
+    }
+    const double headroom = std::min(arm_max_acc_,
+        std::max(0.0, behavior_max_acc_ - acc_behavior.norm()));
+    const double op_norm = acc_operator.norm();
+    if (op_norm > headroom) {
+      acc_clamped_ = true;
+      acc_operator *= (headroom / std::max(op_norm, 1e-9));
+    }
+    arm_desired_accelaration.head(3) = acc_behavior + acc_operator;
+  } else {
+    arm_desired_accelaration.head(3) = acc_behavior + acc_operator;
+    if (a_acc_norm > arm_max_acc_) {
+      acc_clamped_ = true;
+      ROS_WARN_STREAM_THROTTLE(1, "Admittance generates high arm accelaration!"
+                               << " norm: " << a_acc_norm);
+      arm_desired_accelaration.segment(0, 3) *= (arm_max_acc_ / a_acc_norm);
+    }
   }
 
   // Integrate translation
@@ -358,7 +397,15 @@ void Admittance::compute_admittance() {
     target_scale = (force_norm - force_low) / (force_high - force_low);
   }
   double alpha = dt / (tau + dt);
-  contact_scale_filtered_ += alpha * (target_scale - contact_scale_filtered_);
+  // The gate exists to stop drift when nobody is touching the waist. A
+  // behaviour is a scripted event that has to come out whether or not a hand
+  // happens to be resting on it, so hold the gate open while one is running --
+  // otherwise the phenomenon is multiplied by the operator's grip.
+  if (behavior_has_priority) {
+    contact_scale_filtered_ = 1.0;
+  } else {
+    contact_scale_filtered_ += alpha * (target_scale - contact_scale_filtered_);
+  }
   arm_desired_twist_adm_ *= contact_scale_filtered_;
   // arm_desired_twist_adm_.head(3) *= (contact_scale_filtered_ + 1.0) / 2.0;
 
@@ -582,16 +629,24 @@ void Admittance::send_commands_to_robot() {
     track_err_ang_filtered_ = 0.0;
     track_gain_lin_ = 0.0;
     track_gain_ang_ = 0.0;
+  } else if (behavior_priority_active_) {
+    // The arm being behind its command is exactly what a held waist looks
+    // like, and relaxing the command then would cancel the behaviour. Report
+    // no gain rather than a stale one.
+    track_gain_lin_ = 0.0;
+    track_gain_ang_ = 0.0;
   } else {
     apply_tracking_compliance();
   }
 
   double lin_norm = (arm_desired_twist_adm_.segment(0, 3)).norm();
   // (Normalized Scaling) Velosity limitation 
-  if (lin_norm > arm_max_vel_) {
+  const double vel_limit = behavior_priority_active_ ? behavior_max_vel_
+                                                     : arm_max_vel_;
+  if (lin_norm > vel_limit) {
     vel_clamped_ = true;
     ROS_WARN_STREAM_THROTTLE(1, "Admittance fast linear velocity! norm: " << lin_norm);
-    arm_desired_twist_adm_.segment(0, 3) *= (arm_max_vel_ / lin_norm);
+    arm_desired_twist_adm_.segment(0, 3) *= (vel_limit / lin_norm);
   }
   // (Normalized Scaling) Angular limitation
   double ang_norm = (arm_desired_twist_adm_.segment(3, 3)).norm();
@@ -881,6 +936,16 @@ void Admittance::setup_diagnostics() {
       : "Tracking compliance DISABLED (%.3f, %.3f unused).",
       track_err_lin_low_, track_err_lin_high_);
 
+  nh_.param("behavior_priority/enabled", behavior_priority_, behavior_priority_);
+  nh_.param("behavior_priority/tail_sec", behavior_tail_sec_, behavior_tail_sec_);
+  nh_.param("behavior_priority/max_acc", behavior_max_acc_, behavior_max_acc_);
+  nh_.param("behavior_priority/max_vel", behavior_max_vel_, behavior_max_vel_);
+  ROS_INFO_STREAM("Behaviour priority " << (behavior_priority_ ? "on" : "off")
+      << ": while one runs the contact gate is held open, the tracking"
+         " compliance is off and the acceleration budget serves it first"
+         " (tail " << behavior_tail_sec_ << " s, budgets "
+      << behavior_max_acc_ << " m/s^2 and " << behavior_max_vel_ << " m/s).");
+
   nh_.param("torque_budget/enabled", torque_budget_enabled_, torque_budget_enabled_);
   nh_.param("torque_budget/joint", torque_budget_joint_, torque_budget_joint_);
   nh_.param("torque_budget/filter_tau", torque_filter_tau_, torque_filter_tau_);
@@ -1083,6 +1148,9 @@ void Admittance::publish_diagnostics() {
   diag_.tracking_gain_lin = track_gain_lin_;
   diag_.tracking_gain_ang = track_gain_ang_;
 
+  diag_.behavior_priority = behavior_priority_active_;
+  diag_.behavior_acc_norm = behavior_acc_norm_;
+
   diag_.tau_ext.assign(tau_ext_.data(), tau_ext_.data() + 6);
   diag_.tau_joint_filtered = tau_joint_filtered_;
   diag_.tau_moment_arm = vfc_moment_arm_;
@@ -1139,13 +1207,14 @@ void Admittance::publish_diagnostics() {
   std::snprintf(line, sizeof(line),
       "f_u=(%6.1f %6.1f %6.1f)N f_b=(%6.1f %6.1f %6.1f)N | "
       "|v_cmd|=%.3f |v_meas|=%.3f err=%.3f | D=(%3.0f %3.0f %3.0f) gate=%.2f | "
-      "tau1=%5.1f/%4.0f vfc=%4.0f/%4.0f y=%.2f | "
+      "tau1=%5.1f/%4.0f vfc=%4.0f/%4.0f y=%.2f | beh_pri=%d a_beh=%.2f | "
       "sig=%.3f eff=%.1f dt=%.4f | trk=%.2f/%.2f | beh=%s %s",
       diag_.wrench_user.force.x, diag_.wrench_user.force.y, diag_.wrench_user.force.z,
       diag_.wrench_behavior.force.x, diag_.wrench_behavior.force.y, diag_.wrench_behavior.force.z,
       last_published_twist_.head(3).norm(), arm_twist_.head(3).norm(), err_lin,
       D_(0,0), D_(1,1), D_(2,2), contact_scale_filtered_,
       tau_joint_filtered_, torque_limit_, vfc_applied_, vfc_raw_, vfc_yield_,
+      behavior_priority_active_ ? 1 : 0, behavior_acc_norm_,
       sigma_min_, effort_max, measured_dt_,
       track_gain_lin_, track_gain_ang_,
       active_behavior_name_.empty() ? "-" : active_behavior_name_.c_str(),

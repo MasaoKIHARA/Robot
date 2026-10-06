@@ -84,6 +84,23 @@ tracking:
 vfc_center: [0.0263, -0.974, 0.160]   # [x, y, z] in m
 vfc_gain: 400.0                       # [N/m^2]
 
+# The injected behaviours are the phenomenon the simulator exists to show, so
+# their motion has to follow from their own parameters rather than from how
+# hard the operator is holding the waist. While one runs, the contact gate is
+# held open, the tracking compliance is switched off, and the acceleration
+# budget is spent on the behaviour before the operator response. Set
+# enabled:false to go back to sharing everything with the operator.
+behavior_priority:
+  enabled: true
+  tail_sec: 0.3         # [s] keep priority this long after a behaviour ends
+  # Knee buckling asks for 3.69 m/s^2 but arm_max_acc is 2.0, so it has been
+  # coming out at 54 % of its parameters all along (back arching 72 %, the
+  # sideways lean 73 %). These budgets are sized from BehaviorParams.yaml:
+  # 3.7 m/s^2 covers every behaviour and 0.85 m/s is the fastest any reaches.
+  # The operator response keeps arm_max_acc and arm_max_vel.
+  max_acc: 3.7          # [m/s^2]
+  max_vel: 0.85         # [m/s]
+
 torque_budget:
   enabled: true
   joint: 1              #        shoulder lift

@@ -46,6 +46,14 @@ float64 tau_moment_arm            # d(tau_budgeted)/d(F_z) [m]
 float64 vertical_compensation_raw # before the torque budget capped it
 float64 vertical_compensation_yield # 1 = full sag, 0 = fully released
 
+# True while an injected behaviour is being served ahead of the operator
+# response: contact gate held open, tracking compliance off, acceleration
+# budget spent on the behaviour first. behavior_acc_norm is what the behaviour
+# wrench alone asked for, so a value above arm_max_acc means its commanded
+# motion is coming out smaller than its parameters describe.
+bool behavior_priority
+float64 behavior_acc_norm
+
 float64 contact_scale                 # low pass filtered contact gate, 0..1
 float64 acc_norm                      # peak |a| before the acceleration clamp,
                                       # since the previous sample [m/s^2]

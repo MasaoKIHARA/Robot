@@ -157,6 +157,27 @@ protected:
   double sigma_min_ = 0.0;
   double manipulability_ = 0.0;
 
+  // --- Behaviour priority ---
+  // The injected behaviours are the phenomenon the simulator exists to show,
+  // so their commanded motion has to follow from their own parameters and not
+  // from how hard the operator happens to be holding the waist. Three things
+  // were taking it away from them: the contact gate multiplies the whole
+  // command by a function of the operator's force, the tracking compliance
+  // relaxes the command toward a waist that is being held still, and the
+  // acceleration clamp scaled the operator and the behaviour down together.
+  bool behavior_priority_ = true;
+  double behavior_tail_sec_ = 0.3;   // [s] keep priority this long after one ends
+  double behavior_tail_left_ = 0.0;
+  double behavior_acc_norm_ = 0.0;   // [m/s^2] what the behaviour alone asked for
+  bool behavior_priority_active_ = false;
+  // Knee buckling asks for 3.69 m/s^2 against an arm_max_acc of 2.0, so it has
+  // been coming out at 54 % of its parameters all along; back arching and the
+  // sideways lean at 72 and 73 %. These are the budgets a behaviour may use,
+  // sized from the yaml: 3.7 covers every one of them and 0.85 is the fastest
+  // any of them reaches. The operator keeps arm_max_acc and arm_max_vel.
+  double behavior_max_acc_ = 3.7;   // [m/s^2]
+  double behavior_max_vel_ = 0.85;  // [m/s]
+
   // --- Shoulder-lift torque budget ---
   // A C157A1 stop is the UR refusing torque at joint 1 that its own model does
   // not predict, and every force the operator applies is unmodelled by

@@ -77,6 +77,29 @@ is falling behind its velocity command), `sigma_min` (distance to a singularity)
 `Actual current jN`) and `fe_*` versus `fu_*` (how much of the driving
 force is synthetic rather than applied by the operator).
 
+### Behaviour priority
+The injected behaviours are the phenomenon the simulator exists to show, so
+their commanded motion has to follow from their own parameters rather than from
+how hard the operator happens to be holding the waist. Three things were taking
+it away from them: the contact gate multiplies the whole command by a function
+of the operator's force, the tracking compliance relaxes the command toward a
+waist that is being held still, and the acceleration clamp scaled the operator
+response and the behaviour down together.
+
+Knee buckling asks for 3.69 m/s^2 against an `arm_max_acc` of 2.0, so it has
+been coming out at 54 % of its parameters all along; back arching and the
+sideways lean at 72 and 73 %. While a behaviour runs, `behavior_priority` holds
+the contact gate open, switches the tracking compliance off, and spends the
+budget on the behaviour before the operator response, with `max_acc` and
+`max_vel` sized from `BehaviorParams.yaml` to cover every behaviour.
+
+With the arm reported held still and the operator pushing back, knee buckling
+commands -0.068 m/s with this off and -0.647 m/s with it on, the same figure
+whether the operator pushes 0 N or 90 N. Set `enabled` to `false` to go back to
+sharing everything with the operator. The console shows `beh_pri=1` while a
+behaviour is being served and `a_beh` is what it asked for, so a value above
+`max_acc` means its motion is still coming out smaller than its parameters.
+
 ### Shoulder torque budget
 A `C157A1` protective stop is the UR refusing torque at the shoulder lift joint
 that its dynamic model cannot account for, and every newton the operator applies

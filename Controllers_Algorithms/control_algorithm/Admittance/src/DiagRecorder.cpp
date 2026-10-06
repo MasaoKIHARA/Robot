@@ -125,6 +125,7 @@ void DiagRecorder::write_csv() {
       << "vmeas_x,vmeas_y,vmeas_z,wmeas_x,wmeas_y,wmeas_z,"
       << "err_lin,err_ang,err_lin_f,err_ang_f,trk_g_lin,trk_g_ang,"
       << "tau0,tau1,tau2,tau3,tau4,tau5,tau_f,tau_arm,vert_comp_raw,vfc_yield,"
+      << "beh_pri,a_beh,"
       << "pos_x,pos_y,pos_z,"
       << "D_x,D_y,D_z,contact_scale,acc_norm,e_yaw,e_pitch,"
       << "acc_clamped,vel_clamped,ang_vel_clamped,slew_clamped,workspace_clamped,";
@@ -161,6 +162,7 @@ void DiagRecorder::write_csv() {
         << d.tau_joint_filtered << "," << d.tau_moment_arm << ","
         << d.vertical_compensation_raw << ","
         << d.vertical_compensation_yield << ","
+        << static_cast<int>(d.behavior_priority) << "," << d.behavior_acc_norm << ","
         << d.position.x << "," << d.position.y << "," << d.position.z << ","
         << d.damping_diag.x << "," << d.damping_diag.y << "," << d.damping_diag.z << ","
         << d.contact_scale << "," << d.acc_norm << "," << d.e_yaw << "," << d.e_pitch << ","
