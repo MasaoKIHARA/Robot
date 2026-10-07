@@ -104,7 +104,13 @@ behavior_priority:
   # max_vel and the torque budget bound the result -- raising it sharpens the
   # onset rather than raising the peak speed, since max_vel is reached either
   # way. The warning on the console names the figure when it does clip.
-  max_acc: 6.0          # [m/s^2]
+  max_acc: 4.0          # [m/s^2] the largest nominal demand is knee buckling
+                        #          at 3.69, so this covers every behaviour with
+                        #          8 % to spare. It was 6.0 while the base-frame
+                        #          integration let posture inflate the demand to
+                        #          15.69; body_frame removes that, and the slew
+                        #          limiter uses this figure, so headroom here is
+                        #          a faster commanded acceleration for nothing.
   max_vel: 0.85         # [m/s]
   # Integrate behaviours in the frame their parameters are written in. They are
   # specified in the end effector frame while mass_arm is anisotropic in the

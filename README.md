@@ -104,6 +104,14 @@ the end effector frame it is 3.69 at every tilt and nothing clips it, so one key
 press is one motion wherever the arm happens to be. Set `body_frame` to `false`
 for the old base-frame integration.
 
+`max_acc` has to be the figure the slew limiter uses, because that stage runs
+last and is therefore the real acceleration limit -- granting a behaviour a
+budget earlier in the chain achieves nothing if the slew limiter hands it back
+the operator's. With the posture leak gone the largest nominal demand is knee
+buckling at 3.69 m/s^2, so 4.0 covers every behaviour and there is no reason to
+go higher: headroom there is only a faster commanded acceleration, which is
+what a `C153` path-deviation stop fires on.
+
 With the arm reported held still and the operator pushing back, knee buckling
 commands -0.068 m/s with this off and -0.647 m/s with it on, the same figure
 whether the operator pushes 0 N or 90 N. Set `enabled` to `false` to go back to

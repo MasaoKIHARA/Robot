@@ -705,7 +705,14 @@ void Admittance::send_commands_to_robot() {
   Vector3d v_prev = last_published_twist_.segment(0,3);
   Vector3d v_new  = arm_desired_twist_adm_.segment(0,3);
   Vector3d dv = v_new - v_prev;
-  double max_dv = std::max(1e-6, arm_max_acc_ * dt);
+  // The slew limiter runs last, so whatever it uses is the real acceleration
+  // limit. Giving the behaviour a budget earlier in the chain achieves nothing
+  // if this stage hands it back the operator's: the 2026-10-07 18:23 run shows
+  // the command rising at 1.76 m/s^2 against arm_max_acc of 2.0 while the
+  // behaviour had been granted 6.0.
+  const double slew_acc = behavior_priority_active_ ? behavior_max_acc_
+                                                    : arm_max_acc_;
+  double max_dv = std::max(1e-6, slew_acc * dt);
   if (dv.norm() > max_dv) {
     slew_clamped_ = true;
     dv *= (max_dv / dv.norm());
@@ -716,7 +723,10 @@ void Admittance::send_commands_to_robot() {
   Vector3d w_prev = last_published_twist_.segment(3,3);
   Vector3d w_new  = arm_desired_twist_adm_.segment(3,3);
   Vector3d dw = w_new - w_prev;
-  double max_dw = std::max(1e-6, arm_max_ang_acc_ * dt);
+  const double slew_ang_acc = behavior_priority_active_
+      ? arm_max_ang_acc_ * (behavior_max_acc_ / std::max(arm_max_acc_, 1e-6))
+      : arm_max_ang_acc_;
+  double max_dw = std::max(1e-6, slew_ang_acc * dt);
   if (dw.norm() > max_dw) {
     slew_clamped_ = true;
     dw *= (max_dw / dw.norm());
