@@ -175,7 +175,7 @@ protected:
   // sideways lean at 72 and 73 %. These are the budgets a behaviour may use,
   // sized from the yaml: 3.7 covers every one of them and 0.85 is the fastest
   // any of them reaches. The operator keeps arm_max_acc and arm_max_vel.
-  double behavior_max_acc_ = 3.7;   // [m/s^2]
+  double behavior_max_acc_ = 6.0;   // [m/s^2]
   double behavior_max_vel_ = 0.85;  // [m/s]
 
   // --- Shoulder-lift torque budget ---

@@ -93,12 +93,18 @@ vfc_gain: 400.0                       # [N/m^2]
 behavior_priority:
   enabled: true
   tail_sec: 0.3         # [s] keep priority this long after a behaviour ends
-  # Knee buckling asks for 3.69 m/s^2 but arm_max_acc is 2.0, so it has been
-  # coming out at 54 % of its parameters all along (back arching 72 %, the
-  # sideways lean 73 %). These budgets are sized from BehaviorParams.yaml:
-  # 3.7 m/s^2 covers every behaviour and 0.85 m/s is the fastest any reaches.
-  # The operator response keeps arm_max_acc and arm_max_vel.
-  max_acc: 3.7          # [m/s^2]
+  # Knee buckling asks for 3.69 m/s^2 at the nominal end effector orientation
+  # but arm_max_acc is 2.0, so it had been coming out at 54 % of its parameters
+  # (back arching 72 %, the sideways lean 73 %). How much it asks for depends on
+  # posture: the behaviour wrenches are defined in the end effector frame while
+  # mass_arm is 10 kg laterally against 68.37 kg vertically, so any tilt leaks
+  # the vertical force into an axis 6.8 times lighter. The 2026-10-07 run was
+  # tilted enough to need 4.14 and came out at 89 %. Worst case is unbounded,
+  # so keep this loose enough not to be the thing clipping a behaviour and let
+  # max_vel and the torque budget bound the result -- raising it sharpens the
+  # onset rather than raising the peak speed, since max_vel is reached either
+  # way. The warning on the console names the figure when it does clip.
+  max_acc: 6.0          # [m/s^2]
   max_vel: 0.85         # [m/s]
 
 torque_budget:
