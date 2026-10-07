@@ -93,6 +93,17 @@ the contact gate open, switches the tracking compliance off, and spends the
 budget on the behaviour before the operator response, with `max_acc` and
 `max_vel` sized from `BehaviorParams.yaml` to cover every behaviour.
 
+The behaviours are also integrated in the frame their parameters are written
+in. They are specified in the end effector frame, but the admittance ran them
+through a mass that is 10 kg laterally against 68.37 kg vertically in the base
+frame, so any tilt of the effector leaked the vertical force onto an axis 6.8
+times lighter. Measured across tilts of 0, 20 and 40 degrees, the acceleration
+knee buckling demanded went 3.69, 9.68 and 15.69 m/s^2 -- a 4.3-fold spread on
+one key press, and at 40 degrees it was clipped to 38 % of its own demand. In
+the end effector frame it is 3.69 at every tilt and nothing clips it, so one key
+press is one motion wherever the arm happens to be. Set `body_frame` to `false`
+for the old base-frame integration.
+
 With the arm reported held still and the operator pushing back, knee buckling
 commands -0.068 m/s with this off and -0.647 m/s with it on, the same figure
 whether the operator pushes 0 N or 90 N. Set `enabled` to `false` to go back to

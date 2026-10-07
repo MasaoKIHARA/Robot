@@ -178,6 +178,20 @@ protected:
   double behavior_max_acc_ = 6.0;   // [m/s^2]
   double behavior_max_vel_ = 0.85;  // [m/s]
 
+  // The behaviour wrenches are written in the end effector frame, but the
+  // admittance ran them through a mass that is 10 kg laterally and 68.37 kg
+  // vertically in the base frame. Any tilt of the effector therefore leaked
+  // the vertical force onto an axis 6.8 times lighter and the same key press
+  // came out 1.7 to 4.0 times larger depending on posture -- no use as an
+  // experimental stimulus. Integrate the behaviour in the frame its parameters
+  // are written in instead, with the nominal mass and damping, and rotate the
+  // resulting velocity into the base frame. Then one key press is one motion.
+  bool behavior_body_frame_ = true;
+  Eigen::Vector3d behavior_mass_ = Eigen::Vector3d::Ones();
+  Eigen::Vector3d behavior_damping_ = Eigen::Vector3d::Ones();
+  Eigen::Vector3d twist_behavior_ee_ = Eigen::Vector3d::Zero();
+  Eigen::Vector3d twist_behavior_base_ = Eigen::Vector3d::Zero();
+
   // --- Shoulder-lift torque budget ---
   // A C157A1 stop is the UR refusing torque at joint 1 that its own model does
   // not predict, and every force the operator applies is unmodelled by

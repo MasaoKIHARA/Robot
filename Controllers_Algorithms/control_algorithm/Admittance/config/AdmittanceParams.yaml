@@ -106,6 +106,14 @@ behavior_priority:
   # way. The warning on the console names the figure when it does clip.
   max_acc: 6.0          # [m/s^2]
   max_vel: 0.85         # [m/s]
+  # Integrate behaviours in the frame their parameters are written in. They are
+  # specified in the end effector frame while mass_arm is anisotropic in the
+  # base frame, so a tilt used to leak the vertical force onto a lighter axis:
+  # across tilts of 0, 20 and 40 degrees knee buckling demanded 3.69, 9.68 and
+  # 15.69 m/s^2 from one key press, and at 40 degrees was clipped to 38 % of
+  # that. In the end effector frame it is 3.69 at every tilt. false restores
+  # the old base-frame integration.
+  body_frame: true
 
 torque_budget:
   enabled: true
