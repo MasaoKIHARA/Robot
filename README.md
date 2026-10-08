@@ -104,6 +104,12 @@ the end effector frame it is 3.69 at every tilt and nothing clips it, so one key
 press is one motion wherever the arm happens to be. Set `body_frame` to `false`
 for the old base-frame integration.
 
+What the body frame changes is only which mass divides the wrench. The
+behaviour still enters the dynamics as an acceleration and passes through the
+same integrator and the same limiters as everything else; a behaviour velocity
+added to the command directly would be re-injected every cycle, wind up against
+the velocity limit and drive the arm through whatever the operator did.
+
 `max_acc` has to be the figure the slew limiter uses, because that stage runs
 last and is therefore the real acceleration limit -- granting a behaviour a
 budget earlier in the chain achieves nothing if the slew limiter hands it back
@@ -127,9 +133,13 @@ force and 0.75-1.12 m of reach, yet all of them land at 83 +/- 4 Nm of 50 ms
 filtered `|J^T w|` at joint 1. Force alone does not predict a stop; force times
 moment arm does.
 
-The node computes that torque every cycle and shows it as `tau1=<now>/<limit>`
-on the console, so how close the arm is to a stop is visible while working. The
-`tau0..tau5`, `tau_f` and `tau_arm` CSV columns record it.
+The node computes that torque every cycle and shows it as `tau<j>=<now>/<limit>`
+on the console, so how close the arm is to a stop is visible while working.
+`max=j<n>:<value>` next to it is the worst joint, whichever that is: the budget
+watches joint 1 because that is what a `C157A1` trips on, but a runaway on
+2026-10-08 loaded joint 0 to 105.8 Nm while the console read 30.8. The
+`tau0..tau5`, `tau_f`, `tau_max`, `tau_max_j` and `tau_arm` CSV columns record
+it.
 
 The vertical force compensation is bounded by the same budget. It grows with the
 square of the distance from the workspace centre while the moment arm grows with

@@ -42,6 +42,8 @@ geometry_msgs/Vector3 damping_diag    # D_(0,0), D_(1,1), D_(2,2) [Ns/m]
 # 50 ms filter the UR appears to use; measured stops land near 83 Nm.
 float64[] tau_ext
 float64 tau_joint_filtered
+float64 tau_max_filtered          # worst joint, same 50 ms filter
+uint8 tau_max_joint               # which joint that was
 float64 tau_moment_arm            # d(tau_budgeted)/d(F_z) [m]
 float64 vertical_compensation_raw # before the torque budget capped it
 float64 vertical_compensation_yield # 1 = full sag, 0 = fully released

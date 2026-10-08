@@ -64,10 +64,10 @@ Admittance::Admittance(ros::NodeHandle &n,
   arm_desired_twist_adm_.setZero();
   last_published_twist_.setZero();
 
-  // Keep the yaml values: the variable damping overwrites D_ every cycle, and
-  // the behaviours need a mass and damping that do not move under them.
+  // The behaviours divide their wrench by this, in the frame the wrench is
+  // written in, so that posture cannot change how much acceleration a given
+  // behaviour asks for. Damping is left to the shared path as before.
   behavior_mass_ << M_(0,0), M_(1,1), M_(2,2);
-  behavior_damping_ << D_(0,0), D_(1,1), D_(2,2);
 
   ft_arm_ready_ = false;
   base_world_ready_ = false;
@@ -213,8 +213,6 @@ void Admittance::compute_admittance() {
   // Reset velocity when all behaviors just finished
   if (was_any_behavior_active_ && !any_behavior_active) {
     arm_desired_twist_adm_.setZero();
-    twist_behavior_ee_.setZero();
-    twist_behavior_base_.setZero();
     v_yaw_ = 0.0;
     v_pitch_ = 0.0;
   }
@@ -326,29 +324,6 @@ void Admittance::compute_admittance() {
 
   wrench_external_(2) -= vertical_force_compensation;
 
-  // --- Behaviour, integrated in the frame its parameters are written in ---
-  if (behavior_priority_ && behavior_body_frame_) {
-    const Eigen::Vector3d acc_ee =
-        (-behavior_force_ee - behavior_damping_.cwiseProduct(twist_behavior_ee_))
-            .cwiseQuotient(behavior_mass_);
-    behavior_acc_norm_ = acc_ee.norm();
-    Eigen::Vector3d acc = acc_ee;
-    if (behavior_acc_norm_ > behavior_max_acc_) {
-      acc_clamped_ = true;
-      ROS_WARN_STREAM_THROTTLE(1, "Behaviour alone asks for "
-          << behavior_acc_norm_ << " m/s^2, above its " << behavior_max_acc_
-          << " budget; its motion will come out smaller than its parameters.");
-      acc *= (behavior_max_acc_ / behavior_acc_norm_);
-    }
-    twist_behavior_ee_ += acc * loop_rate_.expectedCycleTime().toSec();
-    const double nv = twist_behavior_ee_.norm();
-    if (nv > behavior_max_vel_) twist_behavior_ee_ *= (behavior_max_vel_ / nv);
-    twist_behavior_base_ = rotation_ft_base.topLeftCorner(3,3) * twist_behavior_ee_;
-  } else {
-    twist_behavior_ee_.setZero();
-    twist_behavior_base_.setZero();
-  }
-
   // --- Translation 3D admittance ---
   // Split the drive so the behaviour can be served first. The damping still
   // acts on the whole velocity, so summing the two parts reproduces the single
@@ -356,18 +331,24 @@ void Admittance::compute_admittance() {
   const Eigen::Matrix3d M_inv = M_.topLeftCorner(3,3).inverse();
   coupling_wrench_arm.head(3) = D_.topLeftCorner(3,3) * arm_desired_twist_adm_.head(3)
                               + K_.topLeftCorner(3,3) * error.head(3);
-  // Served separately above when it runs in its own frame, so it must not be
-  // counted a second time here.
-  Eigen::Vector3d acc_behavior = Eigen::Vector3d::Zero();
-  if (!(behavior_priority_ && behavior_body_frame_)) {
+  // The behaviour enters as an acceleration, not as a velocity: it has to pass
+  // through the same integrator and the same limiters as everything else, or it
+  // would be re-injected every cycle and wind the command up against whatever
+  // the operator does. What the body frame changes is only which mass divides
+  // it -- the nominal diagonal in the frame the parameters are written in,
+  // rotated afterwards -- so its magnitude no longer depends on posture while
+  // its direction still follows the effector.
+  Eigen::Vector3d acc_behavior;
+  if (behavior_priority_ && behavior_body_frame_) {
+    acc_behavior = rotation_ft_base.topLeftCorner(3,3)
+        * (-behavior_force_ee).cwiseQuotient(behavior_mass_);
+  } else {
     acc_behavior = M_inv * (-ext_from_behaviors.head(3));
   }
   Eigen::Vector3d acc_operator = M_inv
       * (-coupling_wrench_arm.head(3) + wrench_external_.head(3));
 
-  if (!(behavior_priority_ && behavior_body_frame_)) {
-    behavior_acc_norm_ = acc_behavior.norm();
-  }
+  behavior_acc_norm_ = acc_behavior.norm();
   double a_acc_norm = (acc_behavior + acc_operator).norm();
   acc_norm_ = std::max(acc_norm_, a_acc_norm);
 
@@ -447,10 +428,6 @@ void Admittance::compute_admittance() {
     contact_scale_filtered_ += alpha * (target_scale - contact_scale_filtered_);
   }
   arm_desired_twist_adm_ *= contact_scale_filtered_;
-
-  // Added after the gate on purpose: the phenomenon must not be multiplied by
-  // the operator's grip. The workspace limits below still apply to the sum.
-  arm_desired_twist_adm_.head(3) += twist_behavior_base_;
   // arm_desired_twist_adm_.head(3) *= (contact_scale_filtered_ + 1.0) / 2.0;
 
   // Workspace limits enforcement
@@ -995,10 +972,9 @@ void Admittance::setup_diagnostics() {
   nh_.param("behavior_priority/max_acc", behavior_max_acc_, behavior_max_acc_);
   nh_.param("behavior_priority/max_vel", behavior_max_vel_, behavior_max_vel_);
   nh_.param("behavior_priority/body_frame", behavior_body_frame_, behavior_body_frame_);
-  ROS_INFO_STREAM("Behaviours integrated in the "
+  ROS_INFO_STREAM("Behaviour wrenches divided by the mass in the "
       << (behavior_body_frame_ ? "end effector" : "base")
-      << " frame with mass (" << behavior_mass_.transpose()
-      << ") and damping (" << behavior_damping_.transpose() << ").");
+      << " frame: (" << behavior_mass_.transpose() << ") kg.");
   ROS_INFO_STREAM("Behaviour priority " << (behavior_priority_ ? "on" : "off")
       << ": while one runs the contact gate is held open, the tracking"
          " compliance is off and the acceleration budget serves it first"
@@ -1118,6 +1094,14 @@ void Admittance::update_joint_torque() {
                                        : loop_rate_.expectedCycleTime().toSec();
   const double alpha = dt / (torque_filter_tau_ + dt);
   tau_joint_filtered_ += alpha * (std::fabs(tau_ext_(j)) - tau_joint_filtered_);
+
+  double worst = 0.0;
+  int worst_j = 0;
+  for (int i = 0; i < 6; ++i) {
+    if (std::fabs(tau_ext_(i)) > worst) { worst = std::fabs(tau_ext_(i)); worst_j = i; }
+  }
+  tau_max_filtered_ += alpha * (worst - tau_max_filtered_);
+  tau_max_joint_ = worst_j;
 }
 
 void Admittance::update_manipulability() {
@@ -1212,6 +1196,8 @@ void Admittance::publish_diagnostics() {
 
   diag_.tau_ext.assign(tau_ext_.data(), tau_ext_.data() + 6);
   diag_.tau_joint_filtered = tau_joint_filtered_;
+  diag_.tau_max_filtered = tau_max_filtered_;
+  diag_.tau_max_joint = static_cast<uint8_t>(tau_max_joint_);
   diag_.tau_moment_arm = vfc_moment_arm_;
   diag_.vertical_compensation_raw = vfc_raw_;
   diag_.vertical_compensation_yield = vfc_yield_;
@@ -1266,13 +1252,14 @@ void Admittance::publish_diagnostics() {
   std::snprintf(line, sizeof(line),
       "f_u=(%6.1f %6.1f %6.1f)N f_b=(%6.1f %6.1f %6.1f)N | "
       "|v_cmd|=%.3f |v_meas|=%.3f err=%.3f | D=(%3.0f %3.0f %3.0f) gate=%.2f | "
-      "tau1=%5.1f/%4.0f vfc=%4.0f/%4.0f y=%.2f | beh_pri=%d a_beh=%.2f | "
+      "tau%d=%5.1f/%4.0f max=j%d:%5.1f vfc=%4.0f/%4.0f y=%.2f | beh_pri=%d a_beh=%.2f | "
       "sig=%.3f eff=%.1f dt=%.4f | trk=%.2f/%.2f | beh=%s %s",
       diag_.wrench_user.force.x, diag_.wrench_user.force.y, diag_.wrench_user.force.z,
       diag_.wrench_behavior.force.x, diag_.wrench_behavior.force.y, diag_.wrench_behavior.force.z,
       last_published_twist_.head(3).norm(), arm_twist_.head(3).norm(), err_lin,
       D_(0,0), D_(1,1), D_(2,2), contact_scale_filtered_,
-      tau_joint_filtered_, torque_limit_, vfc_applied_, vfc_raw_, vfc_yield_,
+      torque_budget_joint_, tau_joint_filtered_, torque_limit_,
+      tau_max_joint_, tau_max_filtered_, vfc_applied_, vfc_raw_, vfc_yield_,
       behavior_priority_active_ ? 1 : 0, behavior_acc_norm_,
       sigma_min_, effort_max, measured_dt_,
       track_gain_lin_, track_gain_ang_,

@@ -185,12 +185,9 @@ protected:
   // came out 1.7 to 4.0 times larger depending on posture -- no use as an
   // experimental stimulus. Integrate the behaviour in the frame its parameters
   // are written in instead, with the nominal mass and damping, and rotate the
-  // resulting velocity into the base frame. Then one key press is one motion.
+  // acceleration into the base frame. Then one key press is one motion.
   bool behavior_body_frame_ = true;
   Eigen::Vector3d behavior_mass_ = Eigen::Vector3d::Ones();
-  Eigen::Vector3d behavior_damping_ = Eigen::Vector3d::Ones();
-  Eigen::Vector3d twist_behavior_ee_ = Eigen::Vector3d::Zero();
-  Eigen::Vector3d twist_behavior_base_ = Eigen::Vector3d::Zero();
 
   // --- Shoulder-lift torque budget ---
   // A C157A1 stop is the UR refusing torque at joint 1 that its own model does
@@ -206,6 +203,11 @@ protected:
   double torque_vfc_budget_ = 40.0;   // [Nm] share the vertical compensation may spend
   Vector6d tau_ext_ = Vector6d::Zero();
   double tau_joint_filtered_ = 0.0;
+  // The budget watches joint 1 because that is what a C157A1 trips on, but the
+  // 2026-10-08 runaway loaded joint 0 to 105.8 Nm while the console showed
+  // 30.8, so report the worst joint alongside it.
+  double tau_max_filtered_ = 0.0;
+  int tau_max_joint_ = 0;
   double vfc_moment_arm_ = 0.0;       // d(tau_j1)/d(F_z) [m]
   double vfc_raw_ = 0.0;
   double vfc_applied_ = 0.0;
